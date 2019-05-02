@@ -1,4 +1,4 @@
-use crate::{Constant, Symbol};
+use crate::Symbol;
 
 pub struct PrettyPrinter {
     indent: usize,
@@ -20,10 +20,61 @@ impl PP<Symbol> for PrettyPrinter {
     }
 }
 
-impl PP<Constant> for PrettyPrinter {
-    fn pp(&mut self, _: &Constant) {
-        print!("*")
+mod match_ {
+    use super::*;
+    use crate::match_::*;
+
+    impl PP<Expr> for PrettyPrinter {
+        fn pp(&mut self, t: &Expr) {
+            use Expr::*;
+            match t {
+                Inject { descriminant, data } => {
+                    print!("inj <{}>(", descriminant);
+                    for d in data {
+                        self.pp(d);
+                        print!(", ");
+                    }
+                    print!(")");
+                }
+                Case { cond, clauses } => {
+                    print!("case ");
+                    self.pp(&**cond);
+                    print!(" of\n");
+                    self.indent += 4;
+                    for (pat, arm) in clauses {
+                        print!("{: >1$} ", "|", self.indent);
+                        self.pp(pat);
+                        print!(" => ");
+                        self.pp(arm);
+                        print!("\n");
+                    }
+                    self.indent -= 4;
+                }
+                Symbol(s) => self.pp(s),
+            }
+        }
     }
+
+    impl PP<Pattern> for PrettyPrinter {
+        fn pp(&mut self, t: &Pattern) {
+            use Pattern::*;
+            match t {
+                Constructor {
+                    descriminant,
+                    pattern,
+                } => {
+                    print!("<{}>(", descriminant);
+                    for p in pattern {
+                        self.pp(p);
+                        print!(", ");
+                    }
+                    print!(")");
+                }
+                Variable(s) => self.pp(s),
+            }
+        }
+    }
+
 }
 
 mod case {
@@ -56,7 +107,7 @@ mod case {
                     }
                     self.indent -= 4;
                 }
-                Const(c) => self.pp(c),
+                Symbol(s) => self.pp(s),
             }
         }
     }
