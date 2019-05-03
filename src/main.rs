@@ -1,15 +1,38 @@
 mod pp;
 use itertools::Itertools;
 use pp::{PrettyPrinter, PP};
+use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone)]
 pub struct Symbol(String);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TypeId(u32);
-
 impl Symbol {
     pub fn new(s: impl Into<String>) -> Self {
-        Symbol(s.into())
+        Self(s.into())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TypeId(String);
+
+impl TypeId {
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeDb(HashMap<TypeId, HashSet<u8>>);
+impl TypeDb {
+    pub fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    pub fn insert(&mut self, type_id: TypeId, constructors: impl IntoIterator<Item = u8>) {
+        self.0.insert(type_id, constructors.into_iter().collect());
+    }
+
+    pub fn constructors(&self, type_id: &TypeId) -> Option<&HashSet<u8>> {
+        self.0.get(type_id)
     }
 }
 
@@ -32,6 +55,7 @@ mod match_ {
     #[derive(Debug, Clone)]
     pub enum Pattern {
         Constructor {
+            type_id: TypeId,
             descriminant: u8,
             pattern: Vec<Pattern>,
         },
@@ -43,7 +67,7 @@ mod match_ {
             use Pattern::*;
             match self {
                 Constructor { .. } => true,
-                Variable(_) => false,
+                Variable { .. } => false,
             }
         }
 
@@ -51,7 +75,7 @@ mod match_ {
             use Pattern::*;
             match self {
                 Constructor { .. } => false,
-                Variable(_) => true,
+                Variable { .. } => true,
             }
         }
     }
@@ -110,13 +134,15 @@ mod switch {
     }
 }
 
-struct MatchToCase;
+struct MatchToCase {
+    type_db: TypeDb,
+}
 
 type Stack<T> = Vec<T>;
 
 impl MatchToCase {
-    pub fn new() -> Self {
-        Self
+    pub fn new(type_db: TypeDb) -> Self {
+        Self { type_db }
     }
 
     pub fn compile(&mut self, match_: match_::Expr) -> case::Expr {
@@ -232,31 +258,34 @@ impl MatchToCase {
             .into_iter()
             .map(|(mut pat, arm)| {
                 let p = pat.pop().unwrap();
-                let (des, pattern) = match p {
+                let (type_id, des, pattern) = match p {
                     match_::Pattern::Constructor {
+                        type_id,
                         descriminant,
                         pattern,
-                    } => (descriminant, pattern),
+                    } => (type_id, descriminant, pattern),
                     _ => unreachable!(),
                 };
-                (des, pattern, pat, arm)
+                (type_id, des, pattern, pat, arm)
             })
-            .group_by(|(des, _, _, _)| *des);
+            .group_by(|(_, des, _, _, _)| *des);
         let clause_groups = clause_groups.into_iter().collect::<Vec<_>>();
         let descriminants = clause_groups
             .iter()
             .map(|(des, _)| *des)
             .collect::<Vec<_>>();
+        let mut type_id = None;
         let mut clauses = clause_groups
             .into_iter()
             .map(|(descriminant, clauses)| {
                 let mut npatterns = 0;
                 let clauses = clauses
                     .into_iter()
-                    .map(|(_, mut patterns, pat, arm)| {
+                    .map(|(type_id_, _, patterns, mut pat, arm)| {
+                        type_id = Some(type_id_);
                         npatterns = patterns.len();
-                        patterns.extend(pat);
-                        (patterns, arm)
+                        pat.extend(patterns.into_iter().rev());
+                        (pat, arm)
                     })
                     .collect();
                 let symbols = std::iter::repeat_with(|| self.gensym("v"))
@@ -274,8 +303,7 @@ impl MatchToCase {
                 )
             })
             .collect();
-        // if descriminants.is_exhausitive() {
-        if true {
+        if self.is_exhausitive(&type_id.unwrap(), descriminants) {
             case::Expr::Case {
                 cond: Box::new(case::Expr::Symbol(c.clone())),
                 clauses: clauses,
@@ -308,12 +336,21 @@ impl MatchToCase {
         } else {
             let pos = clauses
                 .iter()
-                .position(|(pat, _)| pat[0].is_variable())
+                .position(|(pat, _)| pat.last().unwrap().is_variable())
                 .unwrap();
             let (consts, other) = clauses.split_at(pos);
             let default = self.match_compile(cond.clone(), other.to_vec(), default);
             self.match_compile(cond, consts.to_vec(), Some(default))
         }
+    }
+
+    fn is_exhausitive(
+        &self,
+        type_id: &TypeId,
+        descriminansts: impl IntoIterator<Item = u8>,
+    ) -> bool {
+        self.type_db.constructors(&type_id).unwrap()
+            == &descriminansts.into_iter().collect::<HashSet<_>>()
     }
 
     fn gensym(&mut self, hint: impl AsRef<str>) -> Symbol {
@@ -452,6 +489,7 @@ fn main() {
             clauses: vec![
                 (
                     Pattern::Constructor {
+                        type_id: TypeId::new("hoge"),
                         descriminant: 0,
                         pattern: vec![],
                     },
@@ -459,6 +497,7 @@ fn main() {
                 ),
                 (
                     Pattern::Constructor {
+                        type_id: TypeId::new("hoge"),
                         descriminant: 1,
                         pattern: vec![Pattern::Variable(S::new("x"))],
                     },
@@ -466,9 +505,11 @@ fn main() {
                 ),
                 (
                     Pattern::Constructor {
+                        type_id: TypeId::new("hoge"),
                         descriminant: 2,
                         pattern: vec![
                             Pattern::Constructor {
+                                type_id: TypeId::new("bool"),
                                 descriminant: 0,
                                 pattern: vec![],
                             },
@@ -480,10 +521,12 @@ fn main() {
                 ),
                 (
                     Pattern::Constructor {
+                        type_id: TypeId::new("hoge"),
                         descriminant: 2,
                         pattern: vec![
                             Pattern::Variable(S::new("x")),
                             Pattern::Constructor {
+                                type_id: TypeId::new("bool"),
                                 descriminant: 0,
                                 pattern: vec![],
                             },
@@ -494,11 +537,13 @@ fn main() {
                 ),
                 (
                     Pattern::Constructor {
+                        type_id: TypeId::new("hoge"),
                         descriminant: 2,
                         pattern: vec![
                             Pattern::Variable(S::new("x")),
                             Pattern::Variable(S::new("y")),
                             Pattern::Constructor {
+                                type_id: TypeId::new("bool"),
                                 descriminant: 0,
                                 pattern: vec![],
                             },
@@ -508,6 +553,7 @@ fn main() {
                 ),
                 (
                     Pattern::Constructor {
+                        type_id: TypeId::new("hoge"),
                         descriminant: 2,
                         pattern: vec![
                             Pattern::Variable(S::new("x")),
@@ -524,7 +570,10 @@ fn main() {
     let mut p = PrettyPrinter::new();
     p.pp(&m);
 
-    let mut compiler = MatchToCase::new();
+    let mut type_db = TypeDb::new();
+    type_db.insert(TypeId::new("bool"), vec![0, 1]);
+    type_db.insert(TypeId::new("hoge"), vec![0, 1, 2]);
+    let mut compiler = MatchToCase::new(type_db);
     let c = compiler.compile(m);
     p.pp(&c);
 

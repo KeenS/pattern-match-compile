@@ -62,6 +62,7 @@ mod match_ {
                 Constructor {
                     descriminant,
                     pattern,
+                    ..
                 } => {
                     print!("<{}>(", descriminant);
                     for p in pattern {
