@@ -51,6 +51,11 @@ mod match_ {
 
     #[derive(Debug, Clone)]
     pub enum Expr {
+        Let {
+            var: Symbol,
+            expr: Box<Expr>,
+            body: Box<Expr>,
+        },
         Inject {
             descriminant: u8,
             data: Vec<Expr>,
@@ -96,6 +101,11 @@ mod case {
 
     #[derive(Debug, Clone)]
     pub enum Expr {
+        Let {
+            var: Symbol,
+            expr: Box<Expr>,
+            body: Box<Expr>,
+        },
         Inject {
             descriminant: u8,
             data: Vec<Expr>,
@@ -161,9 +171,18 @@ impl MatchToCase {
 
     pub fn compile(&mut self, match_: match_::Expr) -> case::Expr {
         match match_ {
+            match_::Expr::Let { var, expr, body } => self.compile_let(var, *expr, *body),
             match_::Expr::Inject { descriminant, data } => self.compile_inject(descriminant, data),
             match_::Expr::Case { cond, clauses } => self.compile_match(*cond, clauses),
             match_::Expr::Symbol(s) => self.compile_symbol(s),
+        }
+    }
+
+    fn compile_let(&mut self, var: Symbol, expr: match_::Expr, body: match_::Expr) -> case::Expr {
+        case::Expr::Let {
+            var,
+            expr: Box::new(self.compile(expr)),
+            body: Box::new(self.compile(body)),
         }
     }
 
@@ -391,10 +410,25 @@ impl CaseToSwitch {
 
     fn compile_expr(&mut self, case: case::Expr) -> (Vec<switch::Stmt>, Symbol) {
         match case {
+            case::Expr::Let { var, expr, body } => self.compile_let(var, *expr, *body),
             case::Expr::Inject { descriminant, data } => self.compile_inject(descriminant, data),
             case::Expr::Case { cond, clauses } => self.compile_case(*cond, clauses),
             case::Expr::Symbol(s) => self.compile_symbol(s),
         }
+    }
+
+    fn compile_let(
+        &mut self,
+        var: Symbol,
+        expr: case::Expr,
+        body: case::Expr,
+    ) -> (Vec<switch::Stmt>, Symbol) {
+        use switch::{Op, Stmt};
+        let (mut stmts, sym) = self.compile_expr(expr);
+        stmts.push(Stmt::Assign(var, Op::Symbol(sym)));
+        let (stmts2, ret) = self.compile_expr(body);
+        stmts.extend(stmts2);
+        (stmts, ret)
     }
 
     fn compile_inject(
