@@ -1,13 +1,23 @@
 mod pp;
 use itertools::Itertools;
 use pp::{PrettyPrinter, PP};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 #[derive(Debug, Clone)]
-pub struct Symbol(String);
+pub struct Symbol(u32, String);
 
-impl Symbol {
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+#[derive(Debug, Clone)]
+pub struct SymbolGenerator(Rc<Cell<u32>>);
+impl SymbolGenerator {
+    pub fn new() -> Self {
+        Self(Rc::new(Cell::new(0)))
+    }
+
+    pub fn gensym(&mut self, hint: impl Into<String>) -> Symbol {
+        let id = self.0.get();
+        self.0.set(id + 1);
+        Symbol(id, hint.into())
     }
 }
 
@@ -136,13 +146,17 @@ mod switch {
 
 struct MatchToCase {
     type_db: TypeDb,
+    symbol_generator: SymbolGenerator,
 }
 
 type Stack<T> = Vec<T>;
 
 impl MatchToCase {
-    pub fn new(type_db: TypeDb) -> Self {
-        Self { type_db }
+    pub fn new(symbol_generator: SymbolGenerator, type_db: TypeDb) -> Self {
+        Self {
+            type_db,
+            symbol_generator,
+        }
     }
 
     pub fn compile(&mut self, match_: match_::Expr) -> case::Expr {
@@ -170,7 +184,9 @@ impl MatchToCase {
             .into_iter()
             .map(|(pat, arm)| (vec![pat], self.compile(arm)))
             .collect();
+        println!("called");
         let v = self.gensym("v");
+
         case::Expr::Case {
             cond: Box::new(cond),
             clauses: vec![(
@@ -353,17 +369,18 @@ impl MatchToCase {
             == &descriminansts.into_iter().collect::<HashSet<_>>()
     }
 
-    fn gensym(&mut self, hint: impl AsRef<str>) -> Symbol {
-        // FIXME
-        Symbol::new(hint.as_ref())
+    fn gensym(&mut self, hint: impl Into<String>) -> Symbol {
+        self.symbol_generator.gensym(hint)
     }
 }
 
-struct CaseToSwitch;
+struct CaseToSwitch {
+    symbol_generator: SymbolGenerator,
+}
 
 impl CaseToSwitch {
-    pub fn new() -> Self {
-        Self
+    pub fn new(symbol_generator: SymbolGenerator) -> Self {
+        Self { symbol_generator }
     }
 
     pub fn compile(&mut self, case: case::Expr) -> switch::Block {
@@ -464,15 +481,13 @@ impl CaseToSwitch {
         (vec![], s)
     }
 
-    fn gensym(&mut self, hint: impl AsRef<str>) -> Symbol {
-        // FIXME
-        Symbol::new(hint.as_ref())
+    fn gensym(&mut self, hint: impl Into<String>) -> Symbol {
+        self.symbol_generator.gensym(hint)
     }
 }
 
 fn main() {
-    use crate::Symbol as S;
-
+    let mut sg = SymbolGenerator::new();
     let m = {
         use match_::*;
         use Expr::*;
@@ -481,9 +496,9 @@ fn main() {
             cond: Box::new(Inject {
                 descriminant: 2,
                 data: vec![
-                    Symbol(S::new("*")),
-                    Symbol(S::new("*")),
-                    Symbol(S::new("*")),
+                    Symbol(sg.gensym("*")),
+                    Symbol(sg.gensym("*")),
+                    Symbol(sg.gensym("*")),
                 ],
             }),
             clauses: vec![
@@ -493,15 +508,15 @@ fn main() {
                         descriminant: 0,
                         pattern: vec![],
                     },
-                    Expr::Symbol(S::new("*")),
+                    Expr::Symbol(sg.gensym("*")),
                 ),
                 (
                     Pattern::Constructor {
                         type_id: TypeId::new("hoge"),
                         descriminant: 1,
-                        pattern: vec![Pattern::Variable(S::new("x"))],
+                        pattern: vec![Pattern::Variable(sg.gensym("x"))],
                     },
-                    Expr::Symbol(S::new("*")),
+                    Expr::Symbol(sg.gensym("*")),
                 ),
                 (
                     Pattern::Constructor {
@@ -513,35 +528,35 @@ fn main() {
                                 descriminant: 0,
                                 pattern: vec![],
                             },
-                            Pattern::Variable(S::new("y")),
-                            Pattern::Variable(S::new("z")),
+                            Pattern::Variable(sg.gensym("y")),
+                            Pattern::Variable(sg.gensym("z")),
                         ],
                     },
-                    Expr::Symbol(S::new("*")),
+                    Expr::Symbol(sg.gensym("*")),
                 ),
                 (
                     Pattern::Constructor {
                         type_id: TypeId::new("hoge"),
                         descriminant: 2,
                         pattern: vec![
-                            Pattern::Variable(S::new("x")),
+                            Pattern::Variable(sg.gensym("x")),
                             Pattern::Constructor {
                                 type_id: TypeId::new("bool"),
                                 descriminant: 0,
                                 pattern: vec![],
                             },
-                            Pattern::Variable(S::new("z")),
+                            Pattern::Variable(sg.gensym("z")),
                         ],
                     },
-                    Expr::Symbol(S::new("*")),
+                    Expr::Symbol(sg.gensym("*")),
                 ),
                 (
                     Pattern::Constructor {
                         type_id: TypeId::new("hoge"),
                         descriminant: 2,
                         pattern: vec![
-                            Pattern::Variable(S::new("x")),
-                            Pattern::Variable(S::new("y")),
+                            Pattern::Variable(sg.gensym("x")),
+                            Pattern::Variable(sg.gensym("y")),
                             Pattern::Constructor {
                                 type_id: TypeId::new("bool"),
                                 descriminant: 0,
@@ -549,19 +564,19 @@ fn main() {
                             },
                         ],
                     },
-                    Expr::Symbol(S::new("*")),
+                    Expr::Symbol(sg.gensym("*")),
                 ),
                 (
                     Pattern::Constructor {
                         type_id: TypeId::new("hoge"),
                         descriminant: 2,
                         pattern: vec![
-                            Pattern::Variable(S::new("x")),
-                            Pattern::Variable(S::new("y")),
-                            Pattern::Variable(S::new("z")),
+                            Pattern::Variable(sg.gensym("x")),
+                            Pattern::Variable(sg.gensym("y")),
+                            Pattern::Variable(sg.gensym("z")),
                         ],
                     },
-                    Expr::Symbol(S::new("*")),
+                    Expr::Symbol(sg.gensym("*")),
                 ),
             ],
         }
@@ -573,11 +588,11 @@ fn main() {
     let mut type_db = TypeDb::new();
     type_db.insert(TypeId::new("bool"), vec![0, 1]);
     type_db.insert(TypeId::new("hoge"), vec![0, 1, 2]);
-    let mut compiler = MatchToCase::new(type_db);
+    let mut compiler = MatchToCase::new(sg.clone(), type_db);
     let c = compiler.compile(m);
     p.pp(&c);
 
-    let mut compiler = CaseToSwitch::new();
+    let mut compiler = CaseToSwitch::new(sg);
     let s = compiler.compile(c);
 
     p.pp(&s);
