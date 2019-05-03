@@ -206,12 +206,10 @@ impl MatchToCase {
         println!("called");
         let v = self.gensym("v");
 
-        case::Expr::Case {
-            cond: Box::new(cond),
-            clauses: vec![(
-                case::Pattern::Variable(v.clone()),
-                self.match_compile(vec![v], clauses, None),
-            )],
+        case::Expr::Let {
+            expr: Box::new(cond),
+            var: v.clone(),
+            body: Box::new(self.match_compile(vec![v], clauses, None)),
         }
     }
 
@@ -266,15 +264,16 @@ impl MatchToCase {
         let clauses = clauses
             .into_iter()
             .map(|(mut pat, arm)| {
-                let p = match pat.pop().unwrap() {
-                    match_::Pattern::Variable(s) => case::Pattern::Variable(s),
+                let s = match pat.pop().unwrap() {
+                    match_::Pattern::Variable(s) => s,
                     _ => unreachable!(),
                 };
                 (
                     pat,
-                    case::Expr::Case {
-                        cond: Box::new(case::Expr::Symbol(c.clone())),
-                        clauses: vec![(p, arm)],
+                    case::Expr::Let {
+                        expr: Box::new(case::Expr::Symbol(c.clone())),
+                        var: s,
+                        body: Box::new(arm),
                     },
                 )
             })
