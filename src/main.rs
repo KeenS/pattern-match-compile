@@ -4,6 +4,9 @@ use pp::{PrettyPrinter, PP};
 #[derive(Debug, Clone)]
 pub struct Symbol(String);
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TypeId(u32);
+
 impl Symbol {
     pub fn new(s: impl Into<String>) -> Self {
         Symbol(s.into())
@@ -297,17 +300,17 @@ impl MatchToCase {
         if clauses[0].0.last().unwrap().is_variable() {
             let pos = clauses
                 .iter()
-                .rposition(|(pat, _)| pat.last().unwrap().is_constructor())
+                .position(|(pat, _)| pat.last().unwrap().is_constructor())
                 .unwrap();
-            let (other, vars) = clauses.split_at(pos);
+            let (vars, other) = clauses.split_at(pos);
             let default = self.match_compile(cond.clone(), other.to_vec(), default);
             self.match_compile(cond, vars.to_vec(), Some(default))
         } else {
             let pos = clauses
                 .iter()
-                .rposition(|(pat, _)| pat[0].is_variable())
+                .position(|(pat, _)| pat[0].is_variable())
                 .unwrap();
-            let (other, consts) = clauses.split_at(pos);
+            let (consts, other) = clauses.split_at(pos);
             let default = self.match_compile(cond.clone(), other.to_vec(), default);
             self.match_compile(cond, consts.to_vec(), Some(default))
         }
@@ -458,6 +461,48 @@ fn main() {
                     Pattern::Constructor {
                         descriminant: 1,
                         pattern: vec![Pattern::Variable(S::new("x"))],
+                    },
+                    Expr::Symbol(S::new("*")),
+                ),
+                (
+                    Pattern::Constructor {
+                        descriminant: 2,
+                        pattern: vec![
+                            Pattern::Constructor {
+                                descriminant: 0,
+                                pattern: vec![],
+                            },
+                            Pattern::Variable(S::new("y")),
+                            Pattern::Variable(S::new("z")),
+                        ],
+                    },
+                    Expr::Symbol(S::new("*")),
+                ),
+                (
+                    Pattern::Constructor {
+                        descriminant: 2,
+                        pattern: vec![
+                            Pattern::Variable(S::new("x")),
+                            Pattern::Constructor {
+                                descriminant: 0,
+                                pattern: vec![],
+                            },
+                            Pattern::Variable(S::new("z")),
+                        ],
+                    },
+                    Expr::Symbol(S::new("*")),
+                ),
+                (
+                    Pattern::Constructor {
+                        descriminant: 2,
+                        pattern: vec![
+                            Pattern::Variable(S::new("x")),
+                            Pattern::Variable(S::new("y")),
+                            Pattern::Constructor {
+                                descriminant: 0,
+                                pattern: vec![],
+                            },
+                        ],
                     },
                     Expr::Symbol(S::new("*")),
                 ),
