@@ -333,22 +333,14 @@ impl MatchToCase {
             .iter()
             .map(|c| c.0.descriminant)
             .collect::<HashSet<_>>();
-        let mut clauses = clause_with_heads
-            .into_iter()
-            .group_by(|c| c.0.descriminant)
-            .into_iter()
-            .map(|(descriminant, clause_with_heads)| {
+        let mut clauses = descriminants
+            .iter()
+            .map(|&descriminant| {
+                let clauses = self.match_compile_specialize(descriminant, clause_with_heads.iter());
                 let arity = self.type_db.arity(&type_id, descriminant).unwrap();
                 let tmp_vars = std::iter::repeat_with(|| self.gensym("v"))
                     .take(arity)
                     .collect::<Vec<_>>();
-                let clauses = clause_with_heads
-                    .into_iter()
-                    .map(|(head, (mut pat, arm))| {
-                        pat.extend(head.pattern.into_iter().rev());
-                        (pat, arm)
-                    })
-                    .collect();
                 let mut new_cond = cond.clone();
                 new_cond.extend(tmp_vars.clone().into_iter().rev());
                 (
@@ -360,6 +352,7 @@ impl MatchToCase {
                 )
             })
             .collect();
+
         if self.is_exhausitive(&type_id, descriminants) {
             if default.is_some() {
                 panic!("redundant pattern")
@@ -379,6 +372,22 @@ impl MatchToCase {
         }
     }
 
+    fn match_compile_specialize<'a, 'b>(
+        &'a mut self,
+        descriminant: u8,
+        clause_with_heads: impl Iterator<
+            Item = &'b (match_::Constructor, (Stack<match_::Pattern>, case::Expr)),
+        >,
+    ) -> Vec<(Stack<match_::Pattern>, case::Expr)> {
+        clause_with_heads
+            .filter(|(head, _)| head.descriminant == descriminant)
+            .cloned()
+            .map(|(head, (mut pat, arm))| {
+                pat.extend(head.pattern.into_iter().rev());
+                (pat, arm)
+            })
+            .collect()
+    }
     fn match_compile_mixture(
         &mut self,
         cond: Stack<Symbol>,
