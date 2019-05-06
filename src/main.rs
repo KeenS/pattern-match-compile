@@ -240,7 +240,6 @@ impl MatchToCase {
             .into_iter()
             .map(|(pat, arm)| (vec![pat], self.compile(arm)))
             .collect();
-        println!("called");
         let v = self.gensym("v");
 
         case::Expr::Let {
