@@ -53,7 +53,9 @@ mod match_ {
                         print!("{: >1$} ", "|", self.indent);
                         self.pp(pat);
                         print!(" => ");
+                        self.indent += 4;
                         self.pp(arm);
+                        self.indent -= 4;
                         print!("\n");
                     }
                     self.indent -= 4;
@@ -115,7 +117,9 @@ mod case {
                         print!("{: >1$} ", "|", self.indent);
                         self.pp(pat);
                         print!(" => ");
+                        self.indent += 4;
                         self.pp(arm);
+                        self.indent -= 4;
                         print!("\n");
                     }
                     self.indent -= 4;
