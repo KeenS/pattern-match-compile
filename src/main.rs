@@ -191,14 +191,14 @@ mod switch {
     }
 }
 
-struct MatchToCase {
+type Stack<T> = Vec<T>;
+
+struct MatchCompileAutomaton {
     type_db: match_::TypeDb,
     symbol_generator: SymbolGenerator,
 }
 
-type Stack<T> = Vec<T>;
-
-impl MatchToCase {
+impl MatchCompileAutomaton {
     pub fn new(symbol_generator: SymbolGenerator, type_db: match_::TypeDb) -> Self {
         Self {
             type_db,
@@ -411,6 +411,266 @@ impl MatchToCase {
             let default = self.match_compile(cond.clone(), other.to_vec(), default);
             self.match_compile(cond, consts.to_vec(), Some(default))
         }
+    }
+
+    fn is_exhausitive(
+        &self,
+        type_id: &TypeId,
+        descriminansts: impl IntoIterator<Item = u8>,
+    ) -> bool {
+        self.type_db.constructors(&type_id).unwrap()
+            == descriminansts.into_iter().collect::<HashSet<_>>()
+    }
+
+    fn gensym(&mut self, hint: impl Into<String>) -> Symbol {
+        self.symbol_generator.gensym(hint)
+    }
+}
+
+struct MatchCompileDecisionTree {
+    type_db: match_::TypeDb,
+    symbol_generator: SymbolGenerator,
+}
+
+impl MatchCompileDecisionTree {
+    pub fn new(symbol_generator: SymbolGenerator, type_db: match_::TypeDb) -> Self {
+        Self {
+            type_db,
+            symbol_generator,
+        }
+    }
+
+    pub fn compile(&mut self, match_: match_::Expr) -> case::Expr {
+        match match_ {
+            match_::Expr::Let { var, expr, body } => self.compile_let(var, *expr, *body),
+            match_::Expr::Inject { descriminant, data } => self.compile_inject(descriminant, data),
+            match_::Expr::Case { cond, clauses } => self.compile_match(*cond, clauses),
+            match_::Expr::Symbol(s) => self.compile_symbol(s),
+        }
+    }
+
+    fn compile_let(&mut self, var: Symbol, expr: match_::Expr, body: match_::Expr) -> case::Expr {
+        case::Expr::Let {
+            var,
+            expr: Box::new(self.compile(expr)),
+            body: Box::new(self.compile(body)),
+        }
+    }
+
+    fn compile_inject(&mut self, descriminant: u8, data: Vec<match_::Expr>) -> case::Expr {
+        case::Expr::Inject {
+            descriminant,
+            data: data.into_iter().map(|d| self.compile(d)).collect(),
+        }
+    }
+
+    fn compile_match(
+        &mut self,
+        cond: match_::Expr,
+        clauses: Vec<(match_::Pattern, match_::Expr)>,
+    ) -> case::Expr {
+        let cond = self.compile(cond);
+        let clauses = clauses
+            .into_iter()
+            .map(|(pat, arm)| (vec![pat], self.compile(arm)))
+            .collect();
+        let v = self.gensym("v");
+
+        case::Expr::Let {
+            expr: Box::new(cond),
+            var: v.clone(),
+            body: Box::new(self.match_compile(vec![v], clauses)),
+        }
+    }
+
+    fn compile_symbol(&mut self, s: Symbol) -> case::Expr {
+        case::Expr::Symbol(s)
+    }
+
+    fn match_compile(
+        &mut self,
+        cond: Stack<Symbol>,
+        clauses: Vec<(Stack<match_::Pattern>, case::Expr)>,
+    ) -> case::Expr {
+        // assuming clauses.any(|(patterns, _)| patterns.len() == cond.len())
+        if clauses.len() == 0 {
+            self.match_compile_empty(cond, clauses)
+        } else if clauses[0].0.iter().all(|p| p.is_variable()) {
+            self.match_compile_variable(cond, clauses)
+        } else {
+            self.match_compile_mixture(cond, clauses)
+        }
+    }
+
+    fn match_compile_empty(
+        &mut self,
+        _: Stack<Symbol>,
+        _: Vec<(Stack<match_::Pattern>, case::Expr)>,
+    ) -> case::Expr {
+        panic!("non-exhausitive pattern");
+    }
+
+    fn match_compile_variable(
+        &mut self,
+        cond: Stack<Symbol>,
+        mut clauses: Vec<(Stack<match_::Pattern>, case::Expr)>,
+    ) -> case::Expr {
+        let (patterns, expr) = clauses.remove(0);
+        patterns
+            .into_iter()
+            .map(|p| p.variable())
+            .zip(cond.iter().cloned())
+            .fold(expr, |acc, (p, v)| case::Expr::Let {
+                expr: Box::new(case::Expr::Symbol(v)),
+                var: p,
+                body: Box::new(acc),
+            })
+    }
+
+    fn match_compile_mixture(
+        &mut self,
+        mut cond: Stack<Symbol>,
+        clauses: Vec<(Stack<match_::Pattern>, case::Expr)>,
+    ) -> case::Expr {
+        let pos = self.match_compile_find_constructor(&clauses);
+
+        let c = cond.swap_remove(pos);
+        let clause_with_heads = clauses
+            .into_iter()
+            .map(|mut clause| {
+                let head = clause.0.swap_remove(pos);
+                (head, clause)
+            })
+            .collect::<Vec<_>>();
+        let type_id = clause_with_heads
+            .iter()
+            .filter_map(|(head, _)| match head {
+                match_::Pattern::Constructor(match_::Constructor { type_id, .. }) => {
+                    Some(type_id.clone())
+                }
+                _ => None,
+            })
+            .next()
+            .unwrap();
+        let descriminants = clause_with_heads
+            .iter()
+            .filter_map(|(head, _)| match head {
+                match_::Pattern::Constructor(match_::Constructor { descriminant, .. }) => {
+                    Some(*descriminant)
+                }
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        let mut clauses = descriminants
+            .iter()
+            .map(|&descriminant| {
+                let clauses = self.match_compile_specialize(
+                    c.clone(),
+                    &type_id,
+                    descriminant,
+                    clause_with_heads.iter(),
+                );
+                let arity = self.type_db.arity(&type_id, descriminant).unwrap();
+                let tmp_vars = std::iter::repeat_with(|| self.gensym("v"))
+                    .take(arity)
+                    .collect::<Vec<_>>();
+                let mut new_cond = cond.clone();
+                new_cond.extend(tmp_vars.clone().into_iter().rev());
+                (
+                    case::Pattern::Constructor {
+                        descriminant,
+                        data: tmp_vars,
+                    },
+                    self.match_compile(new_cond, clauses),
+                )
+            })
+            .collect();
+
+        if self.is_exhausitive(&type_id, descriminants) {
+            case::Expr::Case {
+                cond: Box::new(case::Expr::Symbol(c.clone())),
+                clauses: clauses,
+            }
+        } else {
+            let default = self.match_compile_default(c.clone(), cond, clause_with_heads.iter());
+            clauses.push((case::Pattern::Variable(self.gensym("_")), default));
+            case::Expr::Case {
+                cond: Box::new(case::Expr::Symbol(c.clone())),
+                clauses: clauses,
+            }
+        }
+    }
+
+    fn match_compile_find_constructor(
+        &mut self,
+        clauses: &[(Stack<match_::Pattern>, case::Expr)],
+    ) -> usize {
+        clauses[0]
+            .0
+            .iter()
+            .rposition(|p| p.is_constructor())
+            .unwrap()
+    }
+
+    fn match_compile_specialize<'a, 'b>(
+        &'a mut self,
+        cond: Symbol,
+        type_id: &TypeId,
+        descriminant: u8,
+        clause_with_heads: impl Iterator<
+            Item = &'b (match_::Pattern, (Stack<match_::Pattern>, case::Expr)),
+        >,
+    ) -> Vec<(Stack<match_::Pattern>, case::Expr)> {
+        let arity = self.type_db.arity(type_id, descriminant).unwrap();
+        clause_with_heads
+            .filter_map(|(head, clause)| match head {
+                match_::Pattern::Constructor(c) if c.descriminant == descriminant => {
+                    Some((c.pattern.clone(), clause.clone()))
+                }
+                match_::Pattern::Variable(var) => {
+                    let patterns = std::iter::repeat_with(|| self.gensym("_"))
+                        .take(arity)
+                        .map(match_::Pattern::Variable)
+                        .collect::<Vec<_>>();
+                    let (pat, arm) = clause.clone();
+                    let arm = case::Expr::Let {
+                        expr: Box::new(case::Expr::Symbol(cond.clone())),
+                        var: var.clone(),
+                        body: Box::new(arm),
+                    };
+                    Some((patterns, (pat, arm)))
+                }
+                _ => None,
+            })
+            .map(|(patterns, (mut pat, arm))| {
+                pat.extend(patterns.into_iter().rev());
+                (pat, arm)
+            })
+            .collect()
+    }
+
+    fn match_compile_default<'a, 'b>(
+        &'a mut self,
+        c: Symbol,
+        cond: Stack<Symbol>,
+        clause_with_heads: impl Iterator<
+            Item = &'b (match_::Pattern, (Stack<match_::Pattern>, case::Expr)),
+        >,
+    ) -> case::Expr {
+        let clauses = clause_with_heads
+            .filter(|(head, _)| head.is_variable())
+            .cloned()
+            .map(|(p, (pat, arm))| {
+                let var = p.variable();
+                let arm = case::Expr::Let {
+                    expr: Box::new(case::Expr::Symbol(c.clone())),
+                    var: var.clone(),
+                    body: Box::new(arm),
+                };
+                (pat, arm)
+            })
+            .collect();
+        self.match_compile(cond, clauses)
     }
 
     fn is_exhausitive(
@@ -688,12 +948,21 @@ fn main() {
             },
         ],
     );
-    let mut compiler = MatchToCase::new(sg.clone(), type_db);
-    let c = compiler.compile(m);
+    let mut compiler = MatchCompileAutomaton::new(sg.clone(), type_db.clone());
+    let c = compiler.compile(m.clone());
     p.pp(&c);
 
-    let mut compiler = CaseToSwitch::new(sg);
+    let mut compiler = CaseToSwitch::new(sg.clone());
     let s = compiler.compile(c);
 
     p.pp(&s);
+
+    let mut compiler2 = MatchCompileDecisionTree::new(sg.clone(), type_db);
+    let c2 = compiler2.compile(m);
+    p.pp(&c2);
+
+    let mut compiler = CaseToSwitch::new(sg.clone());
+    let s2 = compiler.compile(c2);
+
+    p.pp(&s2);
 }
