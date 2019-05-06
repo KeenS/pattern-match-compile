@@ -67,13 +67,9 @@ mod match_ {
         fn pp(&mut self, t: &Pattern) {
             use Pattern::*;
             match t {
-                Constructor {
-                    descriminant,
-                    pattern,
-                    ..
-                } => {
-                    print!("<{}>(", descriminant);
-                    for p in pattern {
+                Constructor(c) => {
+                    print!("<{}>(", c.descriminant);
+                    for p in &c.pattern {
                         self.pp(p);
                         print!(", ");
                     }
