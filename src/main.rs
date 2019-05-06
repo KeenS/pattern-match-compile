@@ -193,16 +193,27 @@ mod switch {
 
 type Stack<T> = Vec<T>;
 
-struct MatchCompileAutomaton {
-    type_db: match_::TypeDb,
-    symbol_generator: SymbolGenerator,
+trait MatchCompiler {
+    fn compile(
+        &mut self,
+        cond: Stack<Symbol>,
+        clauses: Vec<(Stack<match_::Pattern>, case::Expr)>,
+    ) -> case::Expr;
 }
 
-impl MatchCompileAutomaton {
-    pub fn new(symbol_generator: SymbolGenerator, type_db: match_::TypeDb) -> Self {
+struct MatchToCase<MC> {
+    symbol_generator: SymbolGenerator,
+    match_compiler: MC,
+}
+
+impl<MC> MatchToCase<MC>
+where
+    MC: MatchCompiler,
+{
+    pub fn new(symbol_generator: SymbolGenerator, match_compiler: MC) -> Self {
         Self {
-            type_db,
             symbol_generator,
+            match_compiler,
         }
     }
 
@@ -245,12 +256,29 @@ impl MatchCompileAutomaton {
         case::Expr::Let {
             expr: Box::new(cond),
             var: v.clone(),
-            body: Box::new(self.match_compile(vec![v], clauses, None)),
+            body: Box::new(self.match_compiler.compile(vec![v], clauses)),
         }
     }
 
     fn compile_symbol(&mut self, s: Symbol) -> case::Expr {
         case::Expr::Symbol(s)
+    }
+
+    fn gensym(&mut self, hint: impl Into<String>) -> Symbol {
+        self.symbol_generator.gensym(hint)
+    }
+}
+
+struct BackTrackMatchCompile {
+    symbol_generator: SymbolGenerator,
+    type_db: match_::TypeDb,
+}
+impl BackTrackMatchCompile {
+    pub fn new(symbol_generator: SymbolGenerator, type_db: match_::TypeDb) -> Self {
+        Self {
+            symbol_generator,
+            type_db,
+        }
     }
 
     fn match_compile(
@@ -338,7 +366,7 @@ impl MatchCompileAutomaton {
             .map(|&descriminant| {
                 let clauses = self.match_compile_specialize(descriminant, clause_with_heads.iter());
                 let arity = self.type_db.arity(&type_id, descriminant).unwrap();
-                let tmp_vars = std::iter::repeat_with(|| self.gensym("v"))
+                let tmp_vars = std::iter::repeat_with(|| self.symbol_generator.gensym("v"))
                     .take(arity)
                     .collect::<Vec<_>>();
                 let mut new_cond = cond.clone();
@@ -362,7 +390,10 @@ impl MatchCompileAutomaton {
                 clauses: clauses,
             }
         } else if let Some(default) = default {
-            clauses.push((case::Pattern::Variable(self.gensym("_")), default));
+            clauses.push((
+                case::Pattern::Variable(self.symbol_generator.gensym("_")),
+                default,
+            ));
             case::Expr::Case {
                 cond: Box::new(case::Expr::Symbol(c.clone())),
                 clauses: clauses,
@@ -421,70 +452,29 @@ impl MatchCompileAutomaton {
         self.type_db.constructors(&type_id).unwrap()
             == descriminansts.into_iter().collect::<HashSet<_>>()
     }
+}
 
-    fn gensym(&mut self, hint: impl Into<String>) -> Symbol {
-        self.symbol_generator.gensym(hint)
+impl MatchCompiler for BackTrackMatchCompile {
+    fn compile(
+        &mut self,
+        cond: Vec<Symbol>,
+        clauses: Vec<(Stack<match_::Pattern>, case::Expr)>,
+    ) -> case::Expr {
+        self.match_compile(cond, clauses, None)
     }
 }
 
-struct MatchCompileDecisionTree {
+struct DecisionTreeMatchCompile {
     type_db: match_::TypeDb,
     symbol_generator: SymbolGenerator,
 }
 
-impl MatchCompileDecisionTree {
+impl DecisionTreeMatchCompile {
     pub fn new(symbol_generator: SymbolGenerator, type_db: match_::TypeDb) -> Self {
         Self {
             type_db,
             symbol_generator,
         }
-    }
-
-    pub fn compile(&mut self, match_: match_::Expr) -> case::Expr {
-        match match_ {
-            match_::Expr::Let { var, expr, body } => self.compile_let(var, *expr, *body),
-            match_::Expr::Inject { descriminant, data } => self.compile_inject(descriminant, data),
-            match_::Expr::Case { cond, clauses } => self.compile_match(*cond, clauses),
-            match_::Expr::Symbol(s) => self.compile_symbol(s),
-        }
-    }
-
-    fn compile_let(&mut self, var: Symbol, expr: match_::Expr, body: match_::Expr) -> case::Expr {
-        case::Expr::Let {
-            var,
-            expr: Box::new(self.compile(expr)),
-            body: Box::new(self.compile(body)),
-        }
-    }
-
-    fn compile_inject(&mut self, descriminant: u8, data: Vec<match_::Expr>) -> case::Expr {
-        case::Expr::Inject {
-            descriminant,
-            data: data.into_iter().map(|d| self.compile(d)).collect(),
-        }
-    }
-
-    fn compile_match(
-        &mut self,
-        cond: match_::Expr,
-        clauses: Vec<(match_::Pattern, match_::Expr)>,
-    ) -> case::Expr {
-        let cond = self.compile(cond);
-        let clauses = clauses
-            .into_iter()
-            .map(|(pat, arm)| (vec![pat], self.compile(arm)))
-            .collect();
-        let v = self.gensym("v");
-
-        case::Expr::Let {
-            expr: Box::new(cond),
-            var: v.clone(),
-            body: Box::new(self.match_compile(vec![v], clauses)),
-        }
-    }
-
-    fn compile_symbol(&mut self, s: Symbol) -> case::Expr {
-        case::Expr::Symbol(s)
     }
 
     fn match_compile(
@@ -532,7 +522,7 @@ impl MatchCompileDecisionTree {
         mut cond: Stack<Symbol>,
         clauses: Vec<(Stack<match_::Pattern>, case::Expr)>,
     ) -> case::Expr {
-        let pos = self.match_compile_find_constructor(&clauses);
+        let pos = self.find_constructor(&clauses);
 
         let c = cond.swap_remove(pos);
         let clause_with_heads = clauses
@@ -564,14 +554,14 @@ impl MatchCompileDecisionTree {
         let mut clauses = descriminants
             .iter()
             .map(|&descriminant| {
-                let clauses = self.match_compile_specialize(
+                let clauses = self.specialized_patterns(
                     c.clone(),
                     &type_id,
                     descriminant,
                     clause_with_heads.iter(),
                 );
                 let arity = self.type_db.arity(&type_id, descriminant).unwrap();
-                let tmp_vars = std::iter::repeat_with(|| self.gensym("v"))
+                let tmp_vars = std::iter::repeat_with(|| self.symbol_generator.gensym("v"))
                     .take(arity)
                     .collect::<Vec<_>>();
                 let mut new_cond = cond.clone();
@@ -592,8 +582,11 @@ impl MatchCompileDecisionTree {
                 clauses: clauses,
             }
         } else {
-            let default = self.match_compile_default(c.clone(), cond, clause_with_heads.iter());
-            clauses.push((case::Pattern::Variable(self.gensym("_")), default));
+            let default = self.default_patterns(c.clone(), cond, clause_with_heads.iter());
+            clauses.push((
+                case::Pattern::Variable(self.symbol_generator.gensym("_")),
+                default,
+            ));
             case::Expr::Case {
                 cond: Box::new(case::Expr::Symbol(c.clone())),
                 clauses: clauses,
@@ -601,10 +594,7 @@ impl MatchCompileDecisionTree {
         }
     }
 
-    fn match_compile_find_constructor(
-        &mut self,
-        clauses: &[(Stack<match_::Pattern>, case::Expr)],
-    ) -> usize {
+    fn find_constructor(&mut self, clauses: &[(Stack<match_::Pattern>, case::Expr)]) -> usize {
         clauses[0]
             .0
             .iter()
@@ -612,7 +602,7 @@ impl MatchCompileDecisionTree {
             .unwrap()
     }
 
-    fn match_compile_specialize<'a, 'b>(
+    fn specialized_patterns<'a, 'b>(
         &'a mut self,
         cond: Symbol,
         type_id: &TypeId,
@@ -628,7 +618,7 @@ impl MatchCompileDecisionTree {
                     Some((c.pattern.clone(), clause.clone()))
                 }
                 match_::Pattern::Variable(var) => {
-                    let patterns = std::iter::repeat_with(|| self.gensym("_"))
+                    let patterns = std::iter::repeat_with(|| self.symbol_generator.gensym("_"))
                         .take(arity)
                         .map(match_::Pattern::Variable)
                         .collect::<Vec<_>>();
@@ -649,7 +639,7 @@ impl MatchCompileDecisionTree {
             .collect()
     }
 
-    fn match_compile_default<'a, 'b>(
+    fn default_patterns<'a, 'b>(
         &'a mut self,
         c: Symbol,
         cond: Stack<Symbol>,
@@ -681,9 +671,15 @@ impl MatchCompileDecisionTree {
         self.type_db.constructors(&type_id).unwrap()
             == descriminansts.into_iter().collect::<HashSet<_>>()
     }
+}
 
-    fn gensym(&mut self, hint: impl Into<String>) -> Symbol {
-        self.symbol_generator.gensym(hint)
+impl MatchCompiler for DecisionTreeMatchCompile {
+    fn compile(
+        &mut self,
+        cond: Vec<Symbol>,
+        clauses: Vec<(Stack<match_::Pattern>, case::Expr)>,
+    ) -> case::Expr {
+        self.match_compile(cond, clauses)
     }
 }
 
@@ -948,7 +944,10 @@ fn main() {
             },
         ],
     );
-    let mut compiler = MatchCompileAutomaton::new(sg.clone(), type_db.clone());
+    let mut compiler = MatchToCase::new(
+        sg.clone(),
+        BackTrackMatchCompile::new(sg.clone(), type_db.clone()),
+    );
     let c = compiler.compile(m.clone());
     p.pp(&c);
 
@@ -957,7 +956,10 @@ fn main() {
 
     p.pp(&s);
 
-    let mut compiler2 = MatchCompileDecisionTree::new(sg.clone(), type_db);
+    let mut compiler2 = MatchToCase::new(
+        sg.clone(),
+        DecisionTreeMatchCompile::new(sg.clone(), type_db.clone()),
+    );
     let c2 = compiler2.compile(m);
     p.pp(&c2);
 
