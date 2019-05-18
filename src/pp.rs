@@ -28,14 +28,6 @@ mod match_ {
         fn pp(&mut self, t: &Expr) {
             use Expr::*;
             match t {
-                Let { var, expr, body } => {
-                    print!("let ");
-                    self.pp(var);
-                    print!(" = ");
-                    self.pp(&**expr);
-                    print!(" in\n{: >1$}", "", self.indent);
-                    self.pp(&**body)
-                }
                 Inject { descriminant, data } => {
                     print!("inj <{}>(", descriminant);
                     for d in data {

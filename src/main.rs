@@ -35,11 +35,6 @@ mod match_ {
 
     #[derive(Debug, Clone)]
     pub enum Expr {
-        Let {
-            var: Symbol,
-            expr: Box<Expr>,
-            body: Box<Expr>,
-        },
         Inject {
             descriminant: u8,
             data: Vec<Expr>,
@@ -219,18 +214,9 @@ where
 
     pub fn compile(&mut self, match_: match_::Expr) -> case::Expr {
         match match_ {
-            match_::Expr::Let { var, expr, body } => self.compile_let(var, *expr, *body),
             match_::Expr::Inject { descriminant, data } => self.compile_inject(descriminant, data),
             match_::Expr::Case { cond, clauses } => self.compile_match(*cond, clauses),
             match_::Expr::Symbol(s) => self.compile_symbol(s),
-        }
-    }
-
-    fn compile_let(&mut self, var: Symbol, expr: match_::Expr, body: match_::Expr) -> case::Expr {
-        case::Expr::Let {
-            var,
-            expr: Box::new(self.compile(expr)),
-            body: Box::new(self.compile(body)),
         }
     }
 
