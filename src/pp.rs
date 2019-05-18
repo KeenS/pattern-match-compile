@@ -57,6 +57,18 @@ mod match_ {
         }
     }
 
+    impl PP<Value> for PrettyPrinter {
+        fn pp(&mut self, t: &Value) {
+            let Value { descriminant, data } = t;
+            print!("c <{}>(", descriminant);
+            for d in data {
+                self.pp(d);
+                print!(", ");
+            }
+            print!(")");
+        }
+    }
+
     impl PP<Pattern> for PrettyPrinter {
         fn pp(&mut self, t: &Pattern) {
             use Pattern::*;

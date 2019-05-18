@@ -4,7 +4,7 @@ use pp::{PrettyPrinter, PP};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Symbol(u32, String);
 
 #[derive(Debug, Clone)]
@@ -44,6 +44,12 @@ mod match_ {
             clauses: Vec<(Pattern, Expr)>,
         },
         Symbol(Symbol),
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct Value {
+        pub descriminant: u8,
+        pub data: Vec<Value>,
     }
 
     #[derive(Debug, Clone)]
@@ -125,9 +131,88 @@ mod match_ {
             })
         }
     }
-
 }
 
+struct MatchInterp {
+    scope: HashMap<Symbol, match_::Value>,
+}
+
+struct Fail;
+struct Match;
+
+impl MatchInterp {
+    pub fn new() -> Self {
+        Self {
+            scope: HashMap::new(),
+        }
+    }
+
+    pub fn eval(&mut self, expr: match_::Expr) -> Result<match_::Value, Match> {
+        use match_::Expr::*;
+        match expr {
+            Case { cond, clauses } => {
+                let cond = self.eval(*cond)?;
+                let ret = clauses
+                    .into_iter()
+                    .map(|(pat, arm)| {
+                        self.pattern_match(pat, cond.clone())
+                            .map(|()| self.eval(arm))
+                    })
+                    .fold(Err(Fail), |is_match, ret| ret.or(is_match));
+                match ret {
+                    Ok(Ok(v)) => Ok(v),
+                    Ok(Err(Match)) => Err(Match),
+                    Err(Fail) => Err(Match),
+                }
+            }
+            Symbol(s) => Ok(self.resolve(&s)),
+            Inject { descriminant, data } => Ok(match_::Value {
+                descriminant,
+                data: data
+                    .into_iter()
+                    .map(|e| self.eval(e))
+                    .collect::<Result<Vec<match_::Value>, Match>>()?,
+            }),
+        }
+    }
+
+    fn pattern_match(
+        &mut self,
+        pattern: match_::Pattern,
+        value: match_::Value,
+    ) -> Result<(), Fail> {
+        match (pattern, value) {
+            (match_::Pattern::Variable(s), v) => {
+                self.scope.insert(s, v);
+                Ok(())
+            }
+            (
+                match_::Pattern::Constructor(match_::Constructor {
+                    descriminant: c1,
+                    pattern: ps,
+                    ..
+                }),
+                match_::Value {
+                    descriminant: c2,
+                    data: vs,
+                },
+            ) => {
+                if c1 == c2 {
+                    ps.into_iter()
+                        .zip(vs)
+                        .map(|(p, v)| self.pattern_match(p, v))
+                        .fold(Ok(()), |is_match, ret| ret.and(is_match))
+                } else {
+                    Err(Fail)
+                }
+            }
+        }
+    }
+
+    fn resolve(&mut self, s: &Symbol) -> match_::Value {
+        self.scope[s].clone()
+    }
+}
 mod case {
     use super::*;
 
@@ -797,105 +882,15 @@ impl CaseToSwitch {
 }
 
 fn main() {
-    let mut sg = SymbolGenerator::new();
-    let m = {
-        use match_::*;
-        use Expr::*;
-
-        Case {
-            cond: Box::new(Inject {
-                descriminant: 2,
-                data: vec![
-                    Symbol(sg.gensym("*")),
-                    Symbol(sg.gensym("*")),
-                    Symbol(sg.gensym("*")),
-                ],
-            }),
-            clauses: vec![
-                (
-                    Pattern::Constructor(Constructor {
-                        type_id: TypeId::new("hoge"),
-                        descriminant: 0,
-                        pattern: vec![],
-                    }),
-                    Expr::Symbol(sg.gensym("*")),
-                ),
-                (
-                    Pattern::Constructor(Constructor {
-                        type_id: TypeId::new("hoge"),
-                        descriminant: 1,
-                        pattern: vec![Pattern::Variable(sg.gensym("x"))],
-                    }),
-                    Expr::Symbol(sg.gensym("*")),
-                ),
-                (
-                    Pattern::Constructor(Constructor {
-                        type_id: TypeId::new("hoge"),
-                        descriminant: 2,
-                        pattern: vec![
-                            Pattern::Constructor(Constructor {
-                                type_id: TypeId::new("bool"),
-                                descriminant: 0,
-                                pattern: vec![],
-                            }),
-                            Pattern::Variable(sg.gensym("y")),
-                            Pattern::Variable(sg.gensym("z")),
-                        ],
-                    }),
-                    Expr::Symbol(sg.gensym("*")),
-                ),
-                (
-                    Pattern::Constructor(Constructor {
-                        type_id: TypeId::new("hoge"),
-                        descriminant: 2,
-                        pattern: vec![
-                            Pattern::Variable(sg.gensym("x")),
-                            Pattern::Constructor(Constructor {
-                                type_id: TypeId::new("bool"),
-                                descriminant: 0,
-                                pattern: vec![],
-                            }),
-                            Pattern::Variable(sg.gensym("z")),
-                        ],
-                    }),
-                    Expr::Symbol(sg.gensym("*")),
-                ),
-                (
-                    Pattern::Constructor(Constructor {
-                        type_id: TypeId::new("hoge"),
-                        descriminant: 2,
-                        pattern: vec![
-                            Pattern::Variable(sg.gensym("x")),
-                            Pattern::Variable(sg.gensym("y")),
-                            Pattern::Constructor(Constructor {
-                                type_id: TypeId::new("bool"),
-                                descriminant: 0,
-                                pattern: vec![],
-                            }),
-                        ],
-                    }),
-                    Expr::Symbol(sg.gensym("*")),
-                ),
-                (
-                    Pattern::Constructor(Constructor {
-                        type_id: TypeId::new("hoge"),
-                        descriminant: 2,
-                        pattern: vec![
-                            Pattern::Variable(sg.gensym("x")),
-                            Pattern::Variable(sg.gensym("y")),
-                            Pattern::Variable(sg.gensym("z")),
-                        ],
-                    }),
-                    Expr::Symbol(sg.gensym("*")),
-                ),
-            ],
-        }
-    };
-
-    let mut p = PrettyPrinter::new();
-    p.pp(&m);
-
     let mut type_db = match_::TypeDb::new();
+    type_db.insert(
+        TypeId::new("unit"),
+        vec![match_::ConstructorType {
+            descriminant: 0,
+            params: vec![],
+        }],
+    );
+
     type_db.insert(
         TypeId::new("bool"),
         vec![
@@ -909,6 +904,15 @@ fn main() {
             },
         ],
     );
+
+    type_db.insert(
+        TypeId::new("tuple2"),
+        vec![match_::ConstructorType {
+            descriminant: 0,
+            params: vec![TypeId::new("bool"), TypeId::new("bool")],
+        }],
+    );
+
     type_db.insert(
         TypeId::new("hoge"),
         vec![
@@ -930,27 +934,189 @@ fn main() {
             },
         ],
     );
-    let mut compiler = MatchToCase::new(
-        sg.clone(),
-        BackTrackMatchCompile::new(sg.clone(), type_db.clone()),
-    );
-    let c = compiler.compile(m.clone());
-    p.pp(&c);
 
-    let mut compiler = CaseToSwitch::new(sg.clone());
-    let s = compiler.compile(c);
+    let mut sg = SymbolGenerator::new();
 
-    p.pp(&s);
+    let m = {
+        use match_::*;
+        use Expr::*;
 
-    let mut compiler2 = MatchToCase::new(
-        sg.clone(),
-        DecisionTreeMatchCompile::new(sg.clone(), type_db.clone()),
-    );
-    let c2 = compiler2.compile(m);
-    p.pp(&c2);
+        let truev = Expr::Inject {
+            descriminant: 0,
+            data: vec![],
+        };
+        let unitv = Expr::Inject {
+            descriminant: 0,
+            data: vec![],
+        };
 
-    let mut compiler = CaseToSwitch::new(sg.clone());
-    let s2 = compiler.compile(c2);
+        Case {
+            cond: Box::new(Inject {
+                descriminant: 2,
+                data: vec![truev.clone(), truev.clone(), truev.clone()],
+            }),
+            clauses: vec![
+                (
+                    Pattern::Constructor(Constructor {
+                        type_id: TypeId::new("hoge"),
+                        descriminant: 0,
+                        pattern: vec![],
+                    }),
+                    unitv.clone(),
+                ),
+                (
+                    Pattern::Constructor(Constructor {
+                        type_id: TypeId::new("hoge"),
+                        descriminant: 1,
+                        pattern: vec![Pattern::Variable(sg.gensym("x"))],
+                    }),
+                    unitv.clone(),
+                ),
+                (
+                    Pattern::Constructor(Constructor {
+                        type_id: TypeId::new("hoge"),
+                        descriminant: 2,
+                        pattern: vec![
+                            Pattern::Constructor(Constructor {
+                                type_id: TypeId::new("bool"),
+                                descriminant: 0,
+                                pattern: vec![],
+                            }),
+                            Pattern::Variable(sg.gensym("y")),
+                            Pattern::Variable(sg.gensym("z")),
+                        ],
+                    }),
+                    unitv.clone(),
+                ),
+                (
+                    Pattern::Constructor(Constructor {
+                        type_id: TypeId::new("hoge"),
+                        descriminant: 2,
+                        pattern: vec![
+                            Pattern::Variable(sg.gensym("x")),
+                            Pattern::Constructor(Constructor {
+                                type_id: TypeId::new("bool"),
+                                descriminant: 0,
+                                pattern: vec![],
+                            }),
+                            Pattern::Variable(sg.gensym("z")),
+                        ],
+                    }),
+                    unitv.clone(),
+                ),
+                (
+                    Pattern::Constructor(Constructor {
+                        type_id: TypeId::new("hoge"),
+                        descriminant: 2,
+                        pattern: vec![
+                            Pattern::Variable(sg.gensym("x")),
+                            Pattern::Variable(sg.gensym("y")),
+                            Pattern::Constructor(Constructor {
+                                type_id: TypeId::new("bool"),
+                                descriminant: 0,
+                                pattern: vec![],
+                            }),
+                        ],
+                    }),
+                    unitv.clone(),
+                ),
+                (
+                    Pattern::Constructor(Constructor {
+                        type_id: TypeId::new("hoge"),
+                        descriminant: 2,
+                        pattern: vec![
+                            Pattern::Variable(sg.gensym("x")),
+                            Pattern::Variable(sg.gensym("y")),
+                            Pattern::Variable(sg.gensym("z")),
+                        ],
+                    }),
+                    unitv.clone(),
+                ),
+            ],
+        }
+    };
 
-    p.pp(&s2);
+    let m2 = {
+        use match_::*;
+        use Expr::*;
+
+        let falsev = Expr::Inject {
+            descriminant: 0,
+            data: vec![],
+        };
+        let truev = Expr::Inject {
+            descriminant: 1,
+            data: vec![],
+        };
+        let falsep = Pattern::Constructor(Constructor {
+            type_id: TypeId::new("bool"),
+            descriminant: 0,
+            pattern: vec![],
+        });
+        let truep = Pattern::Constructor(Constructor {
+            type_id: TypeId::new("bool"),
+            descriminant: 1,
+            pattern: vec![],
+        });
+
+        fn tuple2p(p1: Pattern, p2: Pattern) -> Pattern {
+            Pattern::Constructor(Constructor {
+                type_id: TypeId::new("tuple2"),
+                descriminant: 0,
+                pattern: vec![p1, p2],
+            })
+        }
+
+        Case {
+            cond: Box::new(Inject {
+                descriminant: 0,
+                data: vec![falsev.clone(), falsev.clone()],
+            }),
+            clauses: vec![
+                (tuple2p(truep.clone(), truep.clone()), falsev.clone()),
+                (tuple2p(truep.clone(), falsep.clone()), truev.clone()),
+                (tuple2p(falsep.clone(), truep.clone()), truev.clone()),
+                (tuple2p(falsep.clone(), falsep.clone()), falsev.clone()),
+            ],
+        }
+    };
+
+    let mut p = PrettyPrinter::new();
+    p.pp(&m2);
+
+    let mut interpreter = MatchInterp::new();
+    let v = interpreter.eval(m2.clone());
+
+    println!("evaled to");
+    match v {
+        Ok(v) => {
+            p.pp(&v);
+            println!()
+        }
+        Err(Match) => println!("match failed"),
+    }
+
+    // let mut compiler = MatchToCase::new(
+    //     sg.clone(),
+    //     BackTrackMatchCompile::new(sg.clone(), type_db.clone()),
+    // );
+    // let c = compiler.compile(m.clone());
+    // p.pp(&c);
+
+    // let mut compiler = CaseToSwitch::new(sg.clone());
+    // let s = compiler.compile(c);
+
+    // p.pp(&s);
+
+    // let mut compiler2 = MatchToCase::new(
+    //     sg.clone(),
+    //     DecisionTreeMatchCompile::new(sg.clone(), type_db.clone()),
+    // );
+    // let c2 = compiler2.compile(m);
+    // p.pp(&c2);
+
+    // let mut compiler = CaseToSwitch::new(sg.clone());
+    // let s2 = compiler.compile(c2);
+
+    // p.pp(&s2);
 }
