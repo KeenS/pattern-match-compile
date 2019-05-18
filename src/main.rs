@@ -154,14 +154,10 @@ impl MatchInterp {
                 let cond = self.eval(*cond)?;
                 let ret = clauses
                     .into_iter()
-                    .map(|(pat, arm)| {
-                        self.pattern_match(pat, cond.clone())
-                            .map(|()| self.eval(arm))
-                    })
+                    .map(|(pat, arm)| self.pattern_match(pat, cond.clone()).map(|()| arm))
                     .fold(Err(Fail), |is_match, ret| ret.or(is_match));
                 match ret {
-                    Ok(Ok(v)) => Ok(v),
-                    Ok(Err(Match)) => Err(Match),
+                    Ok(e) => self.eval(e),
                     Err(Fail) => Err(Match),
                 }
             }
