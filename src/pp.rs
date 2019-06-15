@@ -20,9 +20,9 @@ impl PP<Symbol> for PrettyPrinter {
     }
 }
 
-mod match_ {
+mod case {
     use super::*;
-    use crate::match_::*;
+    use crate::case::*;
 
     impl PP<Expr> for PrettyPrinter {
         fn pp(&mut self, t: &Expr) {
@@ -36,7 +36,7 @@ mod match_ {
                     }
                     print!(")");
                 }
-                Case { cond, clauses } => {
+                Case { cond, clauses, .. } => {
                     print!("case ");
                     self.pp(&**cond);
                     print!(" of\n");
@@ -88,9 +88,9 @@ mod match_ {
 
 }
 
-mod case {
+mod simple_case {
     use super::*;
-    use crate::case::*;
+    use crate::simple_case::*;
 
     impl PP<Expr> for PrettyPrinter {
         fn pp(&mut self, t: &Expr) {
