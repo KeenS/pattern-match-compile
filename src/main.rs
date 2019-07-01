@@ -743,11 +743,11 @@ impl PatternCompiler for DecisionTreePatternCompiler {
     }
 }
 
-struct CaseToSwitch {
+struct SimpleToSwitch {
     symbol_generator: SymbolGenerator,
 }
 
-impl CaseToSwitch {
+impl SimpleToSwitch {
     pub fn new(symbol_generator: SymbolGenerator) -> Self {
         Self { symbol_generator }
     }
@@ -789,25 +789,31 @@ impl CaseToSwitch {
         data: Vec<simple_case::Expr>,
     ) -> (Vec<switch::Stmt>, Symbol) {
         use switch::{Op, Stmt};
-        let size = (data.len() as u8) + 1;
-        let v = self.gensym("v");
-        let des = self.gensym("des");
-
         let mut ret = Vec::new();
-        ret.push(Stmt::Assign(v.clone(), Op::Alloc { size }));
+        let size = (data.len() as u8) + 1;
+
+        let des = self.gensym("des");
         ret.push(Stmt::Assign(des.clone(), Op::Const(descriminant as i32)));
+
+        let mut syms = Vec::new();
+        for d in data.into_iter() {
+            let (stmts, d) = self.compile_expr(d);
+            ret.extend(stmts);
+            syms.push(d);
+        }
+
+        let v = self.gensym("v");
+        ret.push(Stmt::Assign(v.clone(), Op::Alloc { size }));
         ret.push(Stmt::Store {
             base: v.clone(),
             offset: 0,
             data: des.clone(),
         });
-        for (i, d) in data.into_iter().enumerate() {
-            let (stmts, d) = self.compile_expr(d);
-            ret.extend(stmts);
+        for (i, sym) in syms.into_iter().enumerate() {
             ret.push(Stmt::Store {
                 base: v.clone(),
                 offset: (i as u8) + 1,
-                data: d,
+                data: sym,
             })
         }
         (ret, v.clone())
@@ -1084,7 +1090,7 @@ fn main() {
     let c = compiler.compile(m.clone());
     p.pp(&c);
 
-    let mut compiler = CaseToSwitch::new(sg.clone());
+    let mut compiler = SimpleToSwitch::new(sg.clone());
     let s = compiler.compile(c);
 
     p.pp(&s);
@@ -1096,7 +1102,7 @@ fn main() {
     let c2 = compiler2.compile(m);
     p.pp(&c2);
 
-    let mut compiler = CaseToSwitch::new(sg.clone());
+    let mut compiler = SimpleToSwitch::new(sg.clone());
     let s2 = compiler.compile(c2);
 
     p.pp(&s2);
