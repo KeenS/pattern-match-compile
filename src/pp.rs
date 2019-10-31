@@ -28,9 +28,17 @@ mod case {
         fn pp(&mut self, t: &Expr) {
             use Expr::*;
             match t {
+                Tuple(ts) => {
+                    print!("(");
+                    for t in ts {
+                        self.pp(t);
+                        print!(", ");
+                    }
+                    print!(")");
+                }
                 Inject { descriminant, data } => {
                     print!("inj <{}>(", descriminant);
-                    for d in data {
+                    for d in data.as_ref().map(|d| &**d) {
                         self.pp(d);
                         print!(", ");
                     }
@@ -59,13 +67,27 @@ mod case {
 
     impl PP<Value> for PrettyPrinter {
         fn pp(&mut self, t: &Value) {
-            let Value { descriminant, data } = t;
-            print!("c <{}>(", descriminant);
-            for d in data {
-                self.pp(d);
-                print!(", ");
+            match t {
+                Value::Tuple(t) => {
+                    print!("(");
+                    for d in t {
+                        self.pp(d);
+                        print!(", ");
+                    }
+                    print!(")");
+                }
+                Value::Constructor {
+                    descriminant,
+                    value,
+                } => {
+                    print!("c <{}>(", descriminant);
+                    for d in value.as_ref().map(|d| &**d) {
+                        self.pp(d);
+                        print!(", ");
+                    }
+                    print!(")");
+                }
             }
-            print!(")");
         }
     }
 
@@ -73,9 +95,20 @@ mod case {
         fn pp(&mut self, t: &Pattern) {
             use Pattern::*;
             match t {
-                Constructor(c) => {
-                    print!("<{}>(", c.descriminant);
-                    for p in &c.pattern {
+                Tuple(t) => {
+                    print!("(");
+                    for d in t {
+                        self.pp(d);
+                        print!(", ");
+                    }
+                    print!(")");
+                }
+                Constructor {
+                    descriminant,
+                    pattern,
+                } => {
+                    print!("<{}>(", descriminant);
+                    for p in pattern.as_ref().map(|p| &**p) {
                         self.pp(p);
                         print!(", ");
                     }
@@ -85,7 +118,6 @@ mod case {
             }
         }
     }
-
 }
 
 mod simple_case {
@@ -96,6 +128,14 @@ mod simple_case {
         fn pp(&mut self, t: &Expr) {
             use Expr::*;
             match t {
+                Tuple(t) => {
+                    print!("(");
+                    for d in t {
+                        self.pp(d);
+                        print!(", ");
+                    }
+                    print!(")");
+                }
                 Let { var, expr, body } => {
                     print!("let ");
                     self.pp(var);
@@ -106,7 +146,7 @@ mod simple_case {
                 }
                 Inject { descriminant, data } => {
                     print!("inj <{}>(", descriminant);
-                    for d in data {
+                    for d in data.as_ref().map(|d| &**d) {
                         self.pp(d);
                         print!(", ");
                     }
@@ -137,6 +177,14 @@ mod simple_case {
         fn pp(&mut self, t: &Pattern) {
             use Pattern::*;
             match t {
+                Tuple(t) => {
+                    print!("(");
+                    for s in t {
+                        self.pp(s);
+                        print!(", ");
+                    }
+                    print!(")");
+                }
                 Constructor { descriminant, data } => {
                     print!("<{}>(", descriminant);
                     for s in data {
@@ -149,7 +197,6 @@ mod simple_case {
             }
         }
     }
-
 }
 
 mod switch {
@@ -236,5 +283,4 @@ mod switch {
             }
         }
     }
-
 }

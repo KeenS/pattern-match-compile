@@ -35,9 +35,10 @@ mod case {
 
     #[derive(Debug, Clone)]
     pub enum Expr {
+        Tuple(Vec<Expr>),
         Inject {
             descriminant: u8,
-            data: Vec<Expr>,
+            data: Option<Box<Expr>>,
         },
         Case {
             cond: Box<Expr>,
@@ -48,43 +49,63 @@ mod case {
     }
 
     #[derive(Debug, Clone)]
-    pub struct Value {
-        pub descriminant: u8,
-        pub data: Vec<Value>,
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct Constructor {
-        pub descriminant: u8,
-        pub pattern: Vec<Pattern>,
+    pub enum Value {
+        Tuple(Vec<Value>),
+        Constructor {
+            descriminant: u8,
+            value: Option<Box<Value>>,
+        },
     }
 
     #[derive(Debug, Clone)]
     pub enum Pattern {
-        Constructor(Constructor),
+        Tuple(Vec<Pattern>),
+        Constructor {
+            descriminant: u8,
+            pattern: Option<Box<Pattern>>,
+        },
         Variable(Symbol),
     }
 
     impl Pattern {
+        pub fn is_tuple(&self) -> bool {
+            use Pattern::*;
+            match self {
+                Tuple(_) => true,
+                _ => false,
+            }
+        }
+
+        pub fn tuple(self) -> Vec<Pattern> {
+            use Pattern::*;
+            match self {
+                Tuple(patterns) => patterns,
+                _ => panic!("pattern is not a tuple"),
+            }
+        }
+
         pub fn is_constructor(&self) -> bool {
             use Pattern::*;
             match self {
                 Constructor { .. } => true,
-                Variable { .. } => false,
+                _ => false,
             }
         }
 
-        pub fn constructor(self) -> Constructor {
+        pub fn constructor(self) -> (u8, Option<Pattern>) {
             match self {
-                Pattern::Constructor(c) => c,
+                Pattern::Constructor {
+                    descriminant,
+                    pattern,
+                } => (descriminant, pattern.map(|p| *p)),
                 _ => panic!("pattern is not a constructor"),
             }
         }
         pub fn is_variable(&self) -> bool {
             use Pattern::*;
             match self {
-                Constructor { .. } => false,
                 Variable { .. } => true,
+                _ => false,
             }
         }
 
@@ -97,44 +118,57 @@ mod case {
     }
 
     #[derive(Debug, Clone)]
-    pub struct ConstructorType {
+    pub struct Constructor {
         pub descriminant: u8,
-        pub params: Vec<TypeId>,
+        pub param: Option<TypeId>,
     }
 
     #[derive(Debug, Clone)]
-    pub struct TypeDb(HashMap<TypeId, Vec<ConstructorType>>);
+    pub enum Type {
+        Tuple(Vec<TypeId>),
+        Adt(Vec<Constructor>),
+    }
+
+    impl Type {
+        pub fn tuple(self) -> Vec<TypeId> {
+            use Type::*;
+            match self {
+                Tuple(ts) => ts,
+                _ => panic!("type is not a tuple"),
+            }
+        }
+        pub fn adt(self) -> Vec<Constructor> {
+            use Type::*;
+            match self {
+                Adt(cs) => cs,
+                _ => panic!("type is not an ADT"),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct TypeDb(HashMap<TypeId, Type>);
     impl TypeDb {
         pub fn new() -> Self {
             Self(HashMap::new())
         }
 
-        pub fn insert(
+        pub fn register_tuple(&mut self, type_id: TypeId, tys: impl IntoIterator<Item = TypeId>) {
+            self.0
+                .insert(type_id, Type::Tuple(tys.into_iter().collect()));
+        }
+
+        pub fn register_adt(
             &mut self,
             type_id: TypeId,
-            constructors: impl IntoIterator<Item = ConstructorType>,
+            constructors: impl IntoIterator<Item = Constructor>,
         ) {
-            self.0.insert(type_id, constructors.into_iter().collect());
+            self.0
+                .insert(type_id, Type::Adt(constructors.into_iter().collect()));
         }
 
-        pub fn constructors(&self, type_id: &TypeId) -> Option<HashSet<u8>> {
-            self.0
-                .get(type_id)
-                .map(|cs| cs.iter().map(|c| c.descriminant).collect())
-        }
-
-        pub fn arity(&self, type_id: &TypeId, descriminant: u8) -> Option<usize> {
-            self.0.get(type_id).and_then(|cs| {
-                cs.iter()
-                    .find(|c| c.descriminant == descriminant)
-                    .map(|c| c.params.len())
-            })
-        }
-        pub fn param_tys(&self, type_id: &TypeId, descriminant: u8) -> Option<Vec<TypeId>> {
-            self.0
-                .get(type_id)
-                .and_then(|cs| cs.iter().find(|c| c.descriminant == descriminant))
-                .map(|c| c.params.clone())
+        pub fn find(&self, type_id: &TypeId) -> Option<&Type> {
+            self.0.get(type_id)
         }
     }
 }
@@ -156,6 +190,11 @@ impl CaseInterp {
     pub fn eval(&mut self, expr: case::Expr) -> Result<case::Value, Match> {
         use case::Expr::*;
         match expr {
+            Tuple(tuple) => tuple
+                .into_iter()
+                .map(|e| self.eval(e))
+                .collect::<Result<Vec<_>, Match>>()
+                .map(case::Value::Tuple),
             Case { cond, clauses, .. } => {
                 let cond = self.eval(*cond)?;
                 let ret = clauses
@@ -168,12 +207,12 @@ impl CaseInterp {
                 }
             }
             Symbol(s) => Ok(self.resolve(&s)),
-            Inject { descriminant, data } => Ok(case::Value {
+            Inject { descriminant, data } => Ok(case::Value::Constructor {
                 descriminant,
-                data: data
-                    .into_iter()
-                    .map(|e| self.eval(e))
-                    .collect::<Result<Vec<case::Value>, Match>>()?,
+                value: match data {
+                    None => None,
+                    Some(d) => Some(Box::new(self.eval(*d)?)),
+                },
             }),
         }
     }
@@ -184,26 +223,32 @@ impl CaseInterp {
                 self.scope.insert(s, v);
                 Ok(())
             }
+            (case::Pattern::Tuple(ps), case::Value::Tuple(vs)) => ps
+                .into_iter()
+                .zip(vs)
+                .map(|(p, v)| self.pattern_match(p, v))
+                .fold(Ok(()), |is_match, ret| ret.and(is_match)),
             (
-                case::Pattern::Constructor(case::Constructor {
+                case::Pattern::Constructor {
                     descriminant: c1,
-                    pattern: ps,
-                    ..
-                }),
-                case::Value {
+                    pattern,
+                },
+                case::Value::Constructor {
                     descriminant: c2,
-                    data: vs,
+                    value,
                 },
             ) => {
                 if c1 == c2 {
-                    ps.into_iter()
-                        .zip(vs)
-                        .map(|(p, v)| self.pattern_match(p, v))
-                        .fold(Ok(()), |is_match, ret| ret.and(is_match))
+                    match (pattern, value) {
+                        (None, None) => Ok(()),
+                        (Some(p), Some(v)) => self.pattern_match(*p, *v),
+                        _ => unreachable!("internal error, maybe type checker's bug"),
+                    }
                 } else {
                     Err(Fail)
                 }
             }
+            _ => unreachable!("internal error, maybe type checker's bug"),
         }
     }
 
@@ -216,6 +261,8 @@ mod simple_case {
 
     #[derive(Debug, Clone)]
     pub enum Expr {
+        Tuple(Vec<Expr>),
+
         Let {
             var: Symbol,
             expr: Box<Expr>,
@@ -223,7 +270,7 @@ mod simple_case {
         },
         Inject {
             descriminant: u8,
-            data: Vec<Expr>,
+            data: Option<Box<Expr>>,
         },
         Case {
             cond: Box<Expr>,
@@ -234,10 +281,13 @@ mod simple_case {
 
     #[derive(Debug, Clone)]
     pub enum Pattern {
-        Constructor { descriminant: u8, data: Vec<Symbol> },
+        Tuple(Vec<Symbol>),
+        Constructor {
+            descriminant: u8,
+            data: Option<Symbol>,
+        },
         Variable(Symbol),
     }
-
 }
 
 mod switch {
@@ -297,16 +347,23 @@ where
 
     pub fn compile(&mut self, case: case::Expr) -> simple_case::Expr {
         match case {
-            case::Expr::Inject { descriminant, data } => self.compile_inject(descriminant, data),
+            case::Expr::Tuple(vs) => self.compile_tuple(vs),
+            case::Expr::Inject { descriminant, data } => {
+                self.compile_inject(descriminant, data.map(|d| *d))
+            }
             case::Expr::Case { cond, ty, clauses } => self.compile_case(*cond, ty, clauses),
             case::Expr::Symbol(s) => self.compile_symbol(s),
         }
     }
 
-    fn compile_inject(&mut self, descriminant: u8, data: Vec<case::Expr>) -> simple_case::Expr {
+    fn compile_tuple(&mut self, data: Vec<case::Expr>) -> simple_case::Expr {
+        simple_case::Expr::Tuple(data.into_iter().map(|d| self.compile(d)).collect())
+    }
+
+    fn compile_inject(&mut self, descriminant: u8, data: Option<case::Expr>) -> simple_case::Expr {
         simple_case::Expr::Inject {
             descriminant,
-            data: data.into_iter().map(|d| self.compile(d)).collect(),
+            data: data.map(|d| Box::new(self.compile(d))),
         }
     }
 
@@ -367,6 +424,11 @@ impl BackTrackPatternCompiler {
             self.compile_variable(cond, clauses, default)
         } else if clauses
             .iter()
+            .all(|(patterns, _)| patterns.last().unwrap().is_tuple())
+        {
+            self.compile_tuple(cond, clauses, default)
+        } else if clauses
+            .iter()
             .all(|(patterns, _)| patterns.last().unwrap().is_constructor())
         {
             self.compile_constructor(cond, clauses, default)
@@ -412,6 +474,38 @@ impl BackTrackPatternCompiler {
         self.compile(cond, clauses, default)
     }
 
+    fn compile_tuple(
+        &mut self,
+        mut cond: Stack<(Symbol, TypeId)>,
+        clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
+        default: Option<simple_case::Expr>,
+    ) -> simple_case::Expr {
+        let (sym, ty) = cond.pop().unwrap();
+
+        let param_tys: Vec<TypeId> = self.type_db.find(&ty).cloned().unwrap().tuple();
+        let tmp_vars = std::iter::repeat_with(|| self.symbol_generator.gensym("v"))
+            .take(param_tys.len())
+            .collect::<Vec<_>>();
+        let mut new_cond = cond.clone();
+        new_cond.extend(tmp_vars.iter().cloned().zip(param_tys).rev());
+        let clauses = clauses
+            .into_iter()
+            .map(|(mut patterns, arm)| {
+                // front pattern must be a tuple
+                let vars = patterns.pop().unwrap().tuple();
+                patterns.extend(vars.into_iter().rev());
+                (patterns, arm)
+            })
+            .collect();
+        simple_case::Expr::Case {
+            cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
+            clauses: vec![(
+                simple_case::Pattern::Tuple(tmp_vars),
+                self.compile(new_cond, clauses, default.clone()),
+            )],
+        }
+    }
+
     fn compile_constructor(
         &mut self,
         mut cond: Stack<(Symbol, TypeId)>,
@@ -428,22 +522,29 @@ impl BackTrackPatternCompiler {
             .collect::<Vec<_>>();
         let descriminants = clause_with_heads
             .iter()
-            .map(|c| c.0.descriminant)
+            .map(|c| (c.0).0)
             .collect::<HashSet<_>>();
         let mut clauses = descriminants
             .iter()
             .map(|&descriminant| {
                 let clauses = self.specialize(descriminant, clause_with_heads.iter());
-                let param_tys = self.type_db.param_tys(&ty, descriminant).unwrap();
-                let tmp_vars = std::iter::repeat_with(|| self.symbol_generator.gensym("v"))
-                    .take(param_tys.len())
-                    .collect::<Vec<_>>();
+                let param_ty = self
+                    .type_db
+                    .find(&ty)
+                    .cloned()
+                    .unwrap()
+                    .adt()
+                    .into_iter()
+                    .find(|c| c.descriminant == descriminant)
+                    .map(|c| c.param)
+                    .unwrap();
+                let tmp_var = param_ty.clone().map(|_| self.symbol_generator.gensym("v"));
                 let mut new_cond = cond.clone();
-                new_cond.extend(tmp_vars.iter().cloned().zip(param_tys).rev());
+                new_cond.extend(tmp_var.iter().cloned().zip(param_ty).rev());
                 (
                     simple_case::Pattern::Constructor {
                         descriminant,
-                        data: tmp_vars,
+                        data: tmp_var,
                     },
                     self.compile(new_cond, clauses, default.clone()),
                 )
@@ -501,14 +602,17 @@ impl BackTrackPatternCompiler {
         &'a mut self,
         descriminant: u8,
         clause_with_heads: impl Iterator<
-            Item = &'b (case::Constructor, (Stack<case::Pattern>, simple_case::Expr)),
+            Item = &'b (
+                (u8, Option<case::Pattern>),
+                (Stack<case::Pattern>, simple_case::Expr),
+            ),
         >,
     ) -> Vec<(Stack<case::Pattern>, simple_case::Expr)> {
         clause_with_heads
-            .filter(|(head, _)| head.descriminant == descriminant)
+            .filter(|(head, _)| head.0 == descriminant)
             .cloned()
             .map(|(head, (mut pat, arm))| {
-                pat.extend(head.pattern.into_iter().rev());
+                pat.extend(head.1.into_iter());
                 (pat, arm)
             })
             .collect()
@@ -519,7 +623,14 @@ impl BackTrackPatternCompiler {
         type_id: &TypeId,
         descriminansts: impl IntoIterator<Item = u8>,
     ) -> bool {
-        self.type_db.constructors(&type_id).unwrap()
+        self.type_db
+            .find(&type_id)
+            .cloned()
+            .unwrap()
+            .adt()
+            .into_iter()
+            .map(|c| c.descriminant)
+            .collect::<HashSet<_>>()
             == descriminansts.into_iter().collect::<HashSet<_>>()
     }
 }
@@ -557,6 +668,8 @@ impl DecisionTreePatternCompiler {
             self.compile_empty(cond, clauses)
         } else if clauses[0].0.iter().all(|p| p.is_variable()) {
             self.compile_variable(cond, clauses)
+        } else if clauses[0].0.iter().any(|p| p.is_tuple()) {
+            self.compile_tuple(cond, clauses)
         } else {
             self.compile_mixture(cond, clauses)
         }
@@ -587,6 +700,45 @@ impl DecisionTreePatternCompiler {
             })
     }
 
+    fn compile_tuple(
+        &mut self,
+        mut cond: Stack<(Symbol, TypeId)>,
+        clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
+    ) -> simple_case::Expr {
+        let pos = self.find_tuple(&clauses);
+
+        let (sym, ty) = cond.swap_remove(pos);
+        let param_tys: Vec<TypeId> = self.type_db.find(&ty).cloned().unwrap().tuple();
+        let clauses = clauses
+            .into_iter()
+            .map(|(mut patterns, mut arm)| {
+                let tuple = match patterns.swap_remove(pos) {
+                    case::Pattern::Tuple(t) => t,
+                    case::Pattern::Variable(var) => {
+                        let pattern = std::iter::repeat_with(|| self.symbol_generator.gensym("_"))
+                            .map(case::Pattern::Variable)
+                            .take(param_tys.len())
+                            .collect();
+                        arm = simple_case::Expr::Let {
+                            expr: Box::new(simple_case::Expr::Symbol(sym.clone())),
+                            var: var.clone(),
+                            body: Box::new(arm),
+                        };
+                        pattern
+                    }
+                    _ => unreachable!(),
+                };
+                patterns.extend(tuple.into_iter().rev());
+                (patterns, arm)
+            })
+            .collect();
+
+        let tmp_vars = std::iter::repeat_with(|| self.symbol_generator.gensym("v"))
+            .take(param_tys.len())
+            .collect::<Vec<_>>();
+        cond.extend(tmp_vars.iter().cloned().zip(param_tys.clone()).rev());
+        self.compile(cond, clauses)
+    }
     fn compile_mixture(
         &mut self,
         mut cond: Stack<(Symbol, TypeId)>,
@@ -605,9 +757,7 @@ impl DecisionTreePatternCompiler {
         let descriminants = clause_with_heads
             .iter()
             .filter_map(|(head, _)| match head {
-                case::Pattern::Constructor(case::Constructor { descriminant, .. }) => {
-                    Some(*descriminant)
-                }
+                case::Pattern::Constructor { descriminant, .. } => Some(*descriminant),
                 _ => None,
             })
             .collect::<HashSet<_>>();
@@ -620,16 +770,23 @@ impl DecisionTreePatternCompiler {
                     descriminant,
                     clause_with_heads.iter(),
                 );
-                let param_tys = self.type_db.param_tys(&ty, descriminant).unwrap();
-                let tmp_vars = std::iter::repeat_with(|| self.symbol_generator.gensym("v"))
-                    .take(param_tys.len())
-                    .collect::<Vec<_>>();
+                let param_ty = self
+                    .type_db
+                    .find(&ty)
+                    .cloned()
+                    .unwrap()
+                    .adt()
+                    .into_iter()
+                    .find(|c| c.descriminant == descriminant)
+                    .map(|c| c.param)
+                    .unwrap();
+                let tmp_var = param_ty.clone().map(|_| self.symbol_generator.gensym("v"));
                 let mut new_cond = cond.clone();
-                new_cond.extend(tmp_vars.iter().cloned().zip(param_tys).rev());
+                new_cond.extend(tmp_var.iter().cloned().zip(param_ty).rev());
                 (
                     simple_case::Pattern::Constructor {
                         descriminant,
-                        data: tmp_vars,
+                        data: tmp_var,
                     },
                     self.compile(new_cond, clauses),
                 )
@@ -654,6 +811,10 @@ impl DecisionTreePatternCompiler {
         }
     }
 
+    fn find_tuple(&mut self, clauses: &[(Stack<case::Pattern>, simple_case::Expr)]) -> usize {
+        clauses[0].0.iter().rposition(|p| p.is_tuple()).unwrap()
+    }
+
     fn find_constructor(&mut self, clauses: &[(Stack<case::Pattern>, simple_case::Expr)]) -> usize {
         clauses[0]
             .0
@@ -671,24 +832,35 @@ impl DecisionTreePatternCompiler {
             Item = &'b (case::Pattern, (Stack<case::Pattern>, simple_case::Expr)),
         >,
     ) -> Vec<(Stack<case::Pattern>, simple_case::Expr)> {
-        let arity = self.type_db.arity(type_id, descriminant).unwrap();
+        let param_ty = self
+            .type_db
+            .find(&type_id)
+            .cloned()
+            .unwrap()
+            .adt()
+            .into_iter()
+            .find(|c| c.descriminant == descriminant)
+            .map(|c| c.param)
+            .unwrap();
         clause_with_heads
             .filter_map(|(head, clause)| match head {
-                case::Pattern::Constructor(c) if c.descriminant == descriminant => {
-                    Some((c.pattern.clone(), clause.clone()))
-                }
+                case::Pattern::Constructor {
+                    descriminant: d,
+                    pattern,
+                } if *d == descriminant => Some((pattern.clone().map(|p| *p), clause.clone())),
                 case::Pattern::Variable(var) => {
-                    let patterns = std::iter::repeat_with(|| self.symbol_generator.gensym("_"))
-                        .take(arity)
-                        .map(case::Pattern::Variable)
-                        .collect::<Vec<_>>();
+                    let pattern = param_ty
+                        .as_ref()
+                        .map(|_| self.symbol_generator.gensym("_"))
+                        .map(case::Pattern::Variable);
+
                     let (pat, arm) = clause.clone();
                     let arm = simple_case::Expr::Let {
                         expr: Box::new(simple_case::Expr::Symbol(cond.clone())),
                         var: var.clone(),
                         body: Box::new(arm),
                     };
-                    Some((patterns, (pat, arm)))
+                    Some((pattern, (pat, arm)))
                 }
                 _ => None,
             })
@@ -728,7 +900,14 @@ impl DecisionTreePatternCompiler {
         type_id: &TypeId,
         descriminansts: impl IntoIterator<Item = u8>,
     ) -> bool {
-        self.type_db.constructors(&type_id).unwrap()
+        self.type_db
+            .find(&type_id)
+            .cloned()
+            .unwrap()
+            .adt()
+            .into_iter()
+            .map(|c| c.descriminant)
+            .collect::<HashSet<_>>()
             == descriminansts.into_iter().collect::<HashSet<_>>()
     }
 }
@@ -760,13 +939,41 @@ impl SimpleToSwitch {
 
     fn compile_expr(&mut self, case: simple_case::Expr) -> (Vec<switch::Stmt>, Symbol) {
         match case {
+            simple_case::Expr::Tuple(t) => self.compile_tuple(t),
             simple_case::Expr::Let { var, expr, body } => self.compile_let(var, *expr, *body),
             simple_case::Expr::Inject { descriminant, data } => {
-                self.compile_inject(descriminant, data)
+                self.compile_inject(descriminant, data.map(|d| *d))
             }
             simple_case::Expr::Case { cond, clauses } => self.compile_case(*cond, clauses),
             simple_case::Expr::Symbol(s) => self.compile_symbol(s),
         }
+    }
+
+    fn compile_tuple(&mut self, es: Vec<simple_case::Expr>) -> (Vec<switch::Stmt>, Symbol) {
+        use switch::{Op, Stmt};
+        let mut stmts = vec![];
+        let mut symbols = vec![];
+        for e in es {
+            let (s, sym) = self.compile_expr(e);
+            stmts.extend(s);
+            symbols.push(sym);
+        }
+
+        let t = self.gensym("tuple");
+        stmts.push(Stmt::Assign(
+            t.clone(),
+            Op::Alloc {
+                size: symbols.len() as u8,
+            },
+        ));
+        for (i, s) in symbols.into_iter().enumerate() {
+            stmts.push(Stmt::Store {
+                base: t.clone(),
+                offset: i as u8,
+                data: s,
+            })
+        }
+        (stmts, t)
     }
 
     fn compile_let(
@@ -786,11 +993,11 @@ impl SimpleToSwitch {
     fn compile_inject(
         &mut self,
         descriminant: u8,
-        data: Vec<simple_case::Expr>,
+        data: Option<simple_case::Expr>,
     ) -> (Vec<switch::Stmt>, Symbol) {
         use switch::{Op, Stmt};
         let mut ret = Vec::new();
-        let size = (data.len() as u8) + 1;
+        let size = (data.is_some() as u8) + 1;
 
         let des = self.gensym("des");
         ret.push(Stmt::Assign(des.clone(), Op::Const(descriminant as i32)));
@@ -834,6 +1041,23 @@ impl SimpleToSwitch {
         for (pat, arm) in clauses {
             let (switch_arm, symbol) = self.compile_expr(arm);
             match pat {
+                simple_case::Pattern::Tuple(t) => {
+                    let mut block = t
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, s)| {
+                            Stmt::Assign(
+                                s,
+                                Op::Load {
+                                    base: switch_cond.clone(),
+                                    offset: i as u8,
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    block.extend(switch_arm);
+                    block.push(Stmt::Assign(result_sym.clone(), Op::Symbol(symbol)));
+                }
                 simple_case::Pattern::Variable(s) => {
                     let mut block = vec![Stmt::Assign(s.clone(), Op::Symbol(switch_cond.clone()))];
                     block.extend(switch_arm);
@@ -880,54 +1104,49 @@ impl SimpleToSwitch {
 
 fn main() {
     let mut type_db = case::TypeDb::new();
-    type_db.insert(
-        TypeId::new("unit"),
-        vec![case::ConstructorType {
-            descriminant: 0,
-            params: vec![],
-        }],
-    );
+    type_db.register_tuple(TypeId::new("unit"), vec![]);
 
-    type_db.insert(
+    type_db.register_adt(
         TypeId::new("bool"),
         vec![
-            case::ConstructorType {
+            case::Constructor {
                 descriminant: 0,
-                params: vec![],
+                param: None,
             },
-            case::ConstructorType {
+            case::Constructor {
                 descriminant: 1,
-                params: vec![],
+                param: None,
             },
         ],
     );
 
-    type_db.insert(
+    type_db.register_tuple(
         TypeId::new("tuple2"),
-        vec![case::ConstructorType {
-            descriminant: 0,
-            params: vec![TypeId::new("bool"), TypeId::new("bool")],
-        }],
+        vec![TypeId::new("bool"), TypeId::new("bool")],
+    );
+    type_db.register_tuple(
+        TypeId::new("tuple3"),
+        vec![
+            TypeId::new("bool"),
+            TypeId::new("bool"),
+            TypeId::new("bool"),
+        ],
     );
 
-    type_db.insert(
+    type_db.register_adt(
         TypeId::new("hoge"),
         vec![
-            case::ConstructorType {
+            case::Constructor {
                 descriminant: 0,
-                params: vec![],
+                param: None,
             },
-            case::ConstructorType {
+            case::Constructor {
                 descriminant: 1,
-                params: vec![TypeId::new("bool")],
+                param: Some(TypeId::new("bool")),
             },
-            case::ConstructorType {
+            case::Constructor {
                 descriminant: 2,
-                params: vec![
-                    TypeId::new("bool"),
-                    TypeId::new("bool"),
-                    TypeId::new("bool"),
-                ],
+                param: Some(TypeId::new("tuple3")),
             },
         ],
     );
@@ -940,85 +1159,89 @@ fn main() {
 
         let truev = Expr::Inject {
             descriminant: 0,
-            data: vec![],
+            data: None,
         };
         let unitv = Expr::Inject {
             descriminant: 0,
-            data: vec![],
+            data: None,
         };
 
         Case {
             cond: Box::new(Inject {
                 descriminant: 2,
-                data: vec![truev.clone(), truev.clone(), truev.clone()],
+                data: Some(Box::new(Tuple(vec![
+                    truev.clone(),
+                    truev.clone(),
+                    truev.clone(),
+                ]))),
             }),
             ty: TypeId::new("hoge"),
             clauses: vec![
                 (
-                    Pattern::Constructor(Constructor {
+                    Pattern::Constructor {
                         descriminant: 0,
-                        pattern: vec![],
-                    }),
+                        pattern: None,
+                    },
                     unitv.clone(),
                 ),
                 (
-                    Pattern::Constructor(Constructor {
+                    Pattern::Constructor {
                         descriminant: 1,
-                        pattern: vec![Pattern::Variable(sg.gensym("x"))],
-                    }),
+                        pattern: Some(Box::new(Pattern::Variable(sg.gensym("x")))),
+                    },
                     unitv.clone(),
                 ),
                 (
-                    Pattern::Constructor(Constructor {
+                    Pattern::Constructor {
                         descriminant: 2,
-                        pattern: vec![
-                            Pattern::Constructor(Constructor {
+                        pattern: Some(Box::new(Pattern::Tuple(vec![
+                            Pattern::Constructor {
                                 descriminant: 0,
-                                pattern: vec![],
-                            }),
+                                pattern: None,
+                            },
                             Pattern::Variable(sg.gensym("y")),
                             Pattern::Variable(sg.gensym("z")),
-                        ],
-                    }),
+                        ]))),
+                    },
                     unitv.clone(),
                 ),
                 (
-                    Pattern::Constructor(Constructor {
+                    Pattern::Constructor {
                         descriminant: 2,
-                        pattern: vec![
+                        pattern: Some(Box::new(Pattern::Tuple(vec![
                             Pattern::Variable(sg.gensym("x")),
-                            Pattern::Constructor(Constructor {
+                            Pattern::Constructor {
                                 descriminant: 0,
-                                pattern: vec![],
-                            }),
+                                pattern: None,
+                            },
                             Pattern::Variable(sg.gensym("z")),
-                        ],
-                    }),
+                        ]))),
+                    },
                     unitv.clone(),
                 ),
                 (
-                    Pattern::Constructor(Constructor {
+                    Pattern::Constructor {
                         descriminant: 2,
-                        pattern: vec![
+                        pattern: Some(Box::new(Pattern::Tuple(vec![
                             Pattern::Variable(sg.gensym("x")),
                             Pattern::Variable(sg.gensym("y")),
-                            Pattern::Constructor(Constructor {
+                            Pattern::Constructor {
                                 descriminant: 0,
-                                pattern: vec![],
-                            }),
-                        ],
-                    }),
+                                pattern: None,
+                            },
+                        ]))),
+                    },
                     unitv.clone(),
                 ),
                 (
-                    Pattern::Constructor(Constructor {
+                    Pattern::Constructor {
                         descriminant: 2,
-                        pattern: vec![
+                        pattern: Some(Box::new(Pattern::Tuple(vec![
                             Pattern::Variable(sg.gensym("x")),
                             Pattern::Variable(sg.gensym("y")),
                             Pattern::Variable(sg.gensym("z")),
-                        ],
-                    }),
+                        ]))),
+                    },
                     unitv.clone(),
                 ),
             ],
@@ -1031,33 +1254,27 @@ fn main() {
 
         let falsev = Expr::Inject {
             descriminant: 0,
-            data: vec![],
+            data: None,
         };
         let truev = Expr::Inject {
             descriminant: 1,
-            data: vec![],
+            data: None,
         };
-        let falsep = Pattern::Constructor(Constructor {
+        let falsep = Pattern::Constructor {
             descriminant: 0,
-            pattern: vec![],
-        });
-        let truep = Pattern::Constructor(Constructor {
+            pattern: None,
+        };
+        let truep = Pattern::Constructor {
             descriminant: 1,
-            pattern: vec![],
-        });
+            pattern: None,
+        };
 
         fn tuple2p(p1: Pattern, p2: Pattern) -> Pattern {
-            Pattern::Constructor(Constructor {
-                descriminant: 0,
-                pattern: vec![p1, p2],
-            })
+            Pattern::Tuple(vec![p1, p2])
         }
 
         Case {
-            cond: Box::new(Inject {
-                descriminant: 0,
-                data: vec![falsev.clone(), falsev.clone()],
-            }),
+            cond: Box::new(Tuple(vec![falsev.clone(), falsev.clone()])),
             ty: TypeId::new("tuple2"),
             clauses: vec![
                 (tuple2p(truep.clone(), truep.clone()), falsev.clone()),
@@ -1071,10 +1288,11 @@ fn main() {
     let mut p = PrettyPrinter::new();
     p.pp(&m2);
 
+    println!("");
+    println!("evaled to");
     let mut interpreter = CaseInterp::new();
     let v = interpreter.eval(m2.clone());
 
-    println!("evaled to");
     match v {
         Ok(v) => {
             p.pp(&v);
@@ -1083,6 +1301,10 @@ fn main() {
         Err(Match) => println!("match failed"),
     }
 
+    println!("");
+    p.pp(&m);
+    println!("");
+    println!("case to simple (backtrack)");
     let mut compiler = CaseToSimple::new(
         sg.clone(),
         BackTrackPatternCompiler::new(sg.clone(), type_db.clone()),
@@ -1090,11 +1312,14 @@ fn main() {
     let c = compiler.compile(m.clone());
     p.pp(&c);
 
+    println!("simple to switch");
     let mut compiler = SimpleToSwitch::new(sg.clone());
     let s = compiler.compile(c);
 
+    println!("");
     p.pp(&s);
 
+    println!("case to simple (DecisionTree)");
     let mut compiler2 = CaseToSimple::new(
         sg.clone(),
         DecisionTreePatternCompiler::new(sg.clone(), type_db.clone()),
@@ -1102,8 +1327,10 @@ fn main() {
     let c2 = compiler2.compile(m);
     p.pp(&c2);
 
+    println!("simple to switch");
     let mut compiler = SimpleToSwitch::new(sg.clone());
     let s2 = compiler.compile(c2);
 
+    println!("");
     p.pp(&s2);
 }
