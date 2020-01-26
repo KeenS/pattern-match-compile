@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
+/// 名前を表わすデータ型
 pub struct Symbol(u32, String);
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,7 @@ impl SymbolGenerator {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// 型を表わすデータ型
 pub struct TypeId(String);
 
 impl TypeId {
@@ -35,16 +37,20 @@ mod case {
 
     #[derive(Debug, Clone)]
     pub enum Expr {
+        /// (expr1, expr2, ...)
         Tuple(Vec<Expr>),
+        /// Constructor expr
         Inject {
             descriminant: u8,
             data: Option<Box<Expr>>,
         },
+        /// case cond of pattern1 => expr1 | pattern2 => expr2 ...
         Case {
             cond: Box<Expr>,
             ty: TypeId,
             clauses: Vec<(Pattern, Expr)>,
         },
+        /// x
         Symbol(Symbol),
     }
 
