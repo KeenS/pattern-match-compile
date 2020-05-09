@@ -20,6 +20,13 @@ impl SymbolGenerator {
         self.0.set(id + 1);
         Symbol(id, hint.into())
     }
+
+    pub fn gennsyms(&mut self, hint: impl Into<String>, n: usize) -> Vec<Symbol> {
+        let hint = hint.into();
+        std::iter::repeat_with(|| self.gensym(hint.clone()))
+            .take(n)
+            .collect::<Vec<_>>()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -488,12 +495,16 @@ impl BackTrackPatternCompiler {
     ) -> simple_case::Expr {
         let (sym, ty) = cond.pop().unwrap();
 
+        // タプル型の分解
         let param_tys: Vec<TypeId> = self.type_db.find(&ty).cloned().unwrap().tuple();
-        let tmp_vars = std::iter::repeat_with(|| self.symbol_generator.gensym("v"))
-            .take(param_tys.len())
-            .collect::<Vec<_>>();
+        // 一時変数の生成
+        let tmp_vars = self.symbol_generator.gennsyms("v", param_tys.len());
+        // タプルを分解したあとの条件部分の変数。
         let mut new_cond = cond.clone();
+        // スタック構造なので逆順に値を入れていることに注意
         new_cond.extend(tmp_vars.iter().cloned().zip(param_tys).rev());
+
+        // 各行の処理
         let clauses = clauses
             .into_iter()
             .map(|(mut patterns, arm)| {
@@ -503,6 +514,7 @@ impl BackTrackPatternCompiler {
                 (patterns, arm)
             })
             .collect();
+        // 返り値
         simple_case::Expr::Case {
             cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
             clauses: vec![(
@@ -563,7 +575,7 @@ impl BackTrackPatternCompiler {
             }
             simple_case::Expr::Case {
                 cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
-                clauses: clauses,
+                clauses,
             }
         } else if let Some(default) = default {
             clauses.push((
@@ -572,7 +584,7 @@ impl BackTrackPatternCompiler {
             ));
             simple_case::Expr::Case {
                 cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
-                clauses: clauses,
+                clauses,
             }
         } else {
             panic!("pattern is not exhausitive")
@@ -721,9 +733,11 @@ impl DecisionTreePatternCompiler {
                 let tuple = match patterns.swap_remove(pos) {
                     case::Pattern::Tuple(t) => t,
                     case::Pattern::Variable(var) => {
-                        let pattern = std::iter::repeat_with(|| self.symbol_generator.gensym("_"))
+                        let pattern = self
+                            .symbol_generator
+                            .gennsyms("_", param_tys.len())
+                            .into_iter()
                             .map(case::Pattern::Variable)
-                            .take(param_tys.len())
                             .collect();
                         arm = simple_case::Expr::Let {
                             expr: Box::new(simple_case::Expr::Symbol(sym.clone())),
@@ -739,9 +753,7 @@ impl DecisionTreePatternCompiler {
             })
             .collect();
 
-        let tmp_vars = std::iter::repeat_with(|| self.symbol_generator.gensym("v"))
-            .take(param_tys.len())
-            .collect::<Vec<_>>();
+        let tmp_vars = self.symbol_generator.gennsyms("v", param_tys.len());
         cond.extend(tmp_vars.iter().cloned().zip(param_tys.clone()).rev());
         self.compile(cond, clauses)
     }
