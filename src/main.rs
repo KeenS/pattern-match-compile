@@ -814,7 +814,7 @@ impl DecisionTreePatternCompiler {
         if self.is_exhausitive(&ty, descriminants) {
             simple_case::Expr::Case {
                 cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
-                clauses: clauses,
+                clauses,
             }
         } else {
             let default = self.default_patterns(sym.clone(), cond, clause_with_heads.iter());
@@ -824,7 +824,7 @@ impl DecisionTreePatternCompiler {
             ));
             simple_case::Expr::Case {
                 cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
-                clauses: clauses,
+                clauses,
             }
         }
     }
