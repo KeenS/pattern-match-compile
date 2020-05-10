@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 /// 名前を表わすデータ型
-pub struct Symbol(u32, String);
+pub struct Symbol(String, u32);
 
 #[derive(Debug, Clone)]
 pub struct SymbolGenerator(Rc<Cell<u32>>);
@@ -18,7 +18,7 @@ impl SymbolGenerator {
     pub fn gensym(&mut self, hint: impl Into<String>) -> Symbol {
         let id = self.0.get();
         self.0.set(id + 1);
-        Symbol(id, hint.into())
+        Symbol(hint.into(), id)
     }
 
     pub fn gennsyms(&mut self, hint: impl Into<String>, n: usize) -> Vec<Symbol> {
@@ -80,7 +80,23 @@ mod case {
         Variable(Symbol),
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum PatternType {
+        Tuple,
+        Constructor,
+        Variable,
+    }
+
     impl Pattern {
+        pub fn pattern_type(&self) -> PatternType {
+            use PatternType::*;
+            match self {
+                Pattern::Tuple(_) => Tuple,
+                Pattern::Constructor { .. } => Constructor,
+                Pattern::Variable(_) => Variable,
+            }
+        }
+
         pub fn is_tuple(&self) -> bool {
             use Pattern::*;
             match self {
@@ -202,24 +218,29 @@ impl CaseInterp {
 
     pub fn eval(&mut self, expr: case::Expr) -> Result<case::Value, Match> {
         use case::Expr::*;
+        // どの式かでパターンマッチ
         match expr {
+            // タプルならそれぞれの要素を評価したあとにタプルを作る
             Tuple(tuple) => tuple
                 .into_iter()
                 .map(|e| self.eval(e))
                 .collect::<Result<Vec<_>, Match>>()
                 .map(case::Value::Tuple),
+            // `case` 式ならパターンマッチをする（後述）
             Case { cond, clauses, .. } => {
                 let cond = self.eval(*cond)?;
                 let ret = clauses
                     .into_iter()
                     .map(|(pat, arm)| self.pattern_match(pat, cond.clone()).map(|()| arm))
-                    .fold(Err(Fail), |is_match, ret| ret.or(is_match));
+                    .fold(Err(Fail), |acc, current| acc.or(current));
                 match ret {
                     Ok(e) => self.eval(e),
                     Err(Fail) => Err(Match),
                 }
             }
+            // シンボルはスコープから名前を解決する
             Symbol(s) => Ok(self.resolve(&s)),
+            // コンストラクタなら引数があれば評価し、値を作る
             Inject { descriminant, data } => Ok(case::Value::Constructor {
                 descriminant,
                 value: match data {
@@ -518,10 +539,10 @@ impl BackTrackPatternCompiler {
             .collect();
         // 返り値
         simple_case::Expr::Case {
-            cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
+            cond: Box::new(simple_case::Expr::Symbol(sym)),
             clauses: vec![(
                 simple_case::Pattern::Tuple(tmp_vars),
-                self.compile(new_cond, clauses, default.clone()),
+                self.compile(new_cond, clauses, default),
             )],
         }
     }
@@ -569,7 +590,7 @@ impl BackTrackPatternCompiler {
                     .map(|c| c.param)
                     .unwrap();
                 // 引数があれば一時変数を生成し、条件変数に追加する
-                let tmp_var = param_ty.clone().map(|_| self.symbol_generator.gensym("v"));
+                let tmp_var = param_ty.as_ref().map(|_| self.symbol_generator.gensym("v"));
                 let mut new_cond = cond.clone();
                 new_cond.extend(tmp_var.iter().cloned().zip(param_ty).rev());
                 // 返り値はコンストラクタパターンと、それにマッチしたあとの腕の組
@@ -578,6 +599,7 @@ impl BackTrackPatternCompiler {
                         descriminant,
                         data: tmp_var,
                     },
+                    // ↓ ここでdefaultがコピーされる
                     self.compile(new_cond, clauses, default.clone()),
                 )
             })
@@ -617,23 +639,17 @@ impl BackTrackPatternCompiler {
         clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
         default: Option<simple_case::Expr>,
     ) -> simple_case::Expr {
-        if clauses[0].0.last().unwrap().is_variable() {
-            let pos = clauses
-                .iter()
-                .position(|(pat, _)| pat.last().unwrap().is_constructor())
-                .unwrap();
-            let (vars, other) = clauses.split_at(pos);
-            let default = self.compile(cond.clone(), other.to_vec(), default);
-            self.compile(cond, vars.to_vec(), Some(default))
-        } else {
-            let pos = clauses
-                .iter()
-                .position(|(pat, _)| pat.last().unwrap().is_variable())
-                .unwrap();
-            let (consts, other) = clauses.split_at(pos);
-            let default = self.compile(cond.clone(), other.to_vec(), default);
-            self.compile(cond, consts.to_vec(), Some(default))
-        }
+        // 先頭のパターンと違うものが出現した箇所でパターン行列を分割する
+        let head_pattern_type = clauses[0].0.last().unwrap().pattern_type();
+        let pos = clauses
+            .iter()
+            .position(|(pat, _)| pat.last().unwrap().pattern_type() != head_pattern_type)
+            .unwrap();
+        let (clauses, other) = clauses.split_at(pos);
+        // 分割した残りの方をdefaultとし、コンパイルしておく。
+        let default = self.compile(cond.clone(), other.to_vec(), default);
+        // 再帰コンパイル
+        self.compile(cond, clauses.to_vec(), Some(default))
     }
 
     fn specialize<'a, 'b>(
@@ -646,8 +662,10 @@ impl BackTrackPatternCompiler {
             ),
         >,
     ) -> Vec<(Stack<case::Pattern>, simple_case::Expr)> {
+        // 先頭のパターンが指定されたdescriminantに合致する節をあつめてくる
         clause_with_heads
             .filter(|(head, _)| head.0 == descriminant)
+            // ↓ ここで節がコピーされる
             .cloned()
             .map(|(head, (mut pat, arm))| {
                 pat.extend(head.1.into_iter());
@@ -661,6 +679,7 @@ impl BackTrackPatternCompiler {
         type_id: &TypeId,
         descriminansts: impl IntoIterator<Item = u8>,
     ) -> bool {
+        // descriminantの集合がパターンマッチしている型の列挙子全ての集合と合致するかで検査
         self.type_db
             .find(&type_id)
             .cloned()
@@ -1290,27 +1309,37 @@ fn main() {
         use case::*;
         use Expr::*;
 
+        // `false` （値）のつもり
         let falsev = Expr::Inject {
             descriminant: 0,
             data: None,
         };
+        // `true` （値）のつもり
         let truev = Expr::Inject {
             descriminant: 1,
             data: None,
         };
+        // `false` （パターン）のつもり
         let falsep = Pattern::Constructor {
             descriminant: 0,
             pattern: None,
         };
+        // `true` （パターン）のつもり
         let truep = Pattern::Constructor {
             descriminant: 1,
             pattern: None,
         };
 
+        // 2要素タプルの便利メソッド
         fn tuple2p(p1: Pattern, p2: Pattern) -> Pattern {
             Pattern::Tuple(vec![p1, p2])
         }
 
+        // case (false, false) of
+        //     (true, true) => false
+        //   | (true, false) => true
+        //   | (false, true) => true
+        //   | (false, false) => false
         Case {
             cond: Box::new(Tuple(vec![falsev.clone(), falsev.clone()])),
             ty: TypeId::new("tuple2"),
