@@ -456,6 +456,7 @@ impl BackTrackPatternCompiler {
         mut clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
         _: Option<simple_case::Expr>,
     ) -> simple_case::Expr {
+        // because we don't have warning system, just panicing instead
         match clauses.len() {
             0 => panic!("non-exhausitive pattern"),
             1 => clauses.remove(0).1,
@@ -469,6 +470,7 @@ impl BackTrackPatternCompiler {
         clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
         default: Option<simple_case::Expr>,
     ) -> simple_case::Expr {
+        // 条件変数の最初のものと、各節のパターンの最初のものを処理する
         let (sym, _) = cond.pop().unwrap();
         let clauses = clauses
             .into_iter()
@@ -500,7 +502,7 @@ impl BackTrackPatternCompiler {
         // 一時変数の生成
         let tmp_vars = self.symbol_generator.gennsyms("v", param_tys.len());
         // タプルを分解したあとの条件部分の変数。
-        let mut new_cond = cond.clone();
+        let mut new_cond = cond;
         // スタック構造なので逆順に値を入れていることに注意
         new_cond.extend(tmp_vars.iter().cloned().zip(param_tys).rev());
 
@@ -531,6 +533,8 @@ impl BackTrackPatternCompiler {
         default: Option<simple_case::Expr>,
     ) -> simple_case::Expr {
         let (sym, ty) = cond.pop().unwrap();
+        // 各節をパターンの先頭とそれ以外に分解。
+        // 先頭は全てコンストラクタパターン。
         let clause_with_heads = clauses
             .into_iter()
             .map(|mut clause| {
@@ -538,14 +542,22 @@ impl BackTrackPatternCompiler {
                 (head, clause)
             })
             .collect::<Vec<_>>();
+        // 先頭のパターンのdescriminantの集合をとる。
         let descriminants = clause_with_heads
             .iter()
             .map(|c| (c.0).0)
             .collect::<HashSet<_>>();
+        // descriminantごとに特殊化する
         let mut clauses = descriminants
             .iter()
             .map(|&descriminant| {
+                // パターン行列をdescriminantで特殊化したものを取得
                 let clauses = self.specialize(descriminant, clause_with_heads.iter());
+                // Type DBから
+                // 今パターンマッチしている型の、
+                // 対象にしているdescriminantをもつ列挙子の、
+                // 引数があればその、
+                // 型を取得する
                 let param_ty = self
                     .type_db
                     .find(&ty)
@@ -556,9 +568,11 @@ impl BackTrackPatternCompiler {
                     .find(|c| c.descriminant == descriminant)
                     .map(|c| c.param)
                     .unwrap();
+                // 引数があれば一時変数を生成し、条件変数に追加する
                 let tmp_var = param_ty.clone().map(|_| self.symbol_generator.gensym("v"));
                 let mut new_cond = cond.clone();
                 new_cond.extend(tmp_var.iter().cloned().zip(param_ty).rev());
+                // 返り値はコンストラクタパターンと、それにマッチしたあとの腕の組
                 (
                     simple_case::Pattern::Constructor {
                         descriminant,
@@ -569,7 +583,9 @@ impl BackTrackPatternCompiler {
             })
             .collect();
 
+        // 列挙子が網羅的かどうかで挙動が変わる
         if self.is_exhausitive(&ty, descriminants) {
+            // 網羅的なのに後続のパターンがあれば、冗長
             if default.is_some() {
                 panic!("redundant pattern")
             }
@@ -578,6 +594,9 @@ impl BackTrackPatternCompiler {
                 clauses,
             }
         } else if let Some(default) = default {
+            // 網羅的でないなら必ず後続の式が存在する
+
+            // 後続の式は `_ => rest` の形で埋め込む
             clauses.push((
                 simple_case::Pattern::Variable(self.symbol_generator.gensym("_")),
                 default,
@@ -587,6 +606,7 @@ impl BackTrackPatternCompiler {
                 clauses,
             }
         } else {
+            // 列挙子が網羅的でないのに後続のパターンが存在しないならパターンマッチ全体が非網羅的
             panic!("pattern is not exhausitive")
         }
     }
