@@ -725,8 +725,6 @@ impl DecisionTreePatternCompiler {
             self.compile_empty(cond, clauses)
         } else if clauses[0].0.iter().all(|p| p.is_variable()) {
             self.compile_variable(cond, clauses)
-        } else if clauses[0].0.iter().any(|p| p.is_tuple()) {
-            self.compile_tuple(cond, clauses)
         } else {
             self.compile_mixture(cond, clauses)
         }
@@ -757,19 +755,43 @@ impl DecisionTreePatternCompiler {
             })
     }
 
+    fn compile_mixture(
+        &mut self,
+        mut cond: Stack<(Symbol, TypeId)>,
+        mut clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
+    ) -> simple_case::Expr {
+        let pos = self.find_nonvar(&clauses);
+        let top = cond.len() - 1;
+
+        cond.swap(top, pos);
+        for clause in &mut clauses {
+            clause.0.swap(top, pos);
+        }
+
+        if clauses[0].0[0].is_tuple() {
+            self.compile_tuple(cond, clauses)
+        } else {
+            self.compile_constructor(cond, clauses)
+        }
+    }
+
     fn compile_tuple(
         &mut self,
         mut cond: Stack<(Symbol, TypeId)>,
         clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
     ) -> simple_case::Expr {
-        let pos = self.find_tuple(&clauses);
+        // 条件変数の先頭を取り出す
+        let (sym, ty) = cond.pop().unwrap();
 
-        let (sym, ty) = cond.swap_remove(pos);
+        // タプルのそれぞれの型を取得
         let param_tys: Vec<TypeId> = self.type_db.find(&ty).cloned().unwrap().tuple();
         let clauses = clauses
             .into_iter()
             .map(|(mut patterns, mut arm)| {
-                let tuple = match patterns.swap_remove(pos) {
+                // それぞれの行の先頭のパターンに対して、
+                // タプルパターンならその場に展開し、
+                // 変数パターンならタプルの要素数と同じ数の `_` を生成する。
+                let tuple = match patterns.pop().unwrap() {
                     case::Pattern::Tuple(t) => t,
                     case::Pattern::Variable(var) => {
                         let pattern = self
@@ -796,21 +818,24 @@ impl DecisionTreePatternCompiler {
         cond.extend(tmp_vars.iter().cloned().zip(param_tys.clone()).rev());
         self.compile(cond, clauses)
     }
-    fn compile_mixture(
+
+    fn compile_constructor(
         &mut self,
         mut cond: Stack<(Symbol, TypeId)>,
         clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
     ) -> simple_case::Expr {
-        let pos = self.find_constructor(&clauses);
+        // 条件変数の先頭を取り出す
+        let (sym, ty) = cond.pop().unwrap();
 
-        let (sym, ty) = cond.swap_remove(pos);
+        // 各行の先頭パターンだけ使うことがよくあるので最初に取り出しておく
         let clause_with_heads = clauses
             .into_iter()
             .map(|mut clause| {
-                let head = clause.0.swap_remove(pos);
+                let head = clause.0.pop().unwrap();
                 (head, clause)
             })
             .collect::<Vec<_>>();
+        // 1. 先頭パターンのコンストラクタを集めてくる
         let descriminants = clause_with_heads
             .iter()
             .filter_map(|(head, _)| match head {
@@ -818,6 +843,7 @@ impl DecisionTreePatternCompiler {
                 _ => None,
             })
             .collect::<HashSet<_>>();
+        // 2. コンストラクタ毎に特殊化行列を作る
         let mut clauses = descriminants
             .iter()
             .map(|&descriminant| {
@@ -850,6 +876,7 @@ impl DecisionTreePatternCompiler {
             })
             .collect();
 
+        // 3. コンストラクタが網羅的でなければデフォルト行列を作る
         if self.is_exhausitive(&ty, descriminants) {
             simple_case::Expr::Case {
                 cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
@@ -868,16 +895,9 @@ impl DecisionTreePatternCompiler {
         }
     }
 
-    fn find_tuple(&mut self, clauses: &[(Stack<case::Pattern>, simple_case::Expr)]) -> usize {
-        clauses[0].0.iter().rposition(|p| p.is_tuple()).unwrap()
-    }
-
-    fn find_constructor(&mut self, clauses: &[(Stack<case::Pattern>, simple_case::Expr)]) -> usize {
-        clauses[0]
-            .0
-            .iter()
-            .rposition(|p| p.is_constructor())
-            .unwrap()
+    fn find_nonvar(&mut self, clauses: &[(Stack<case::Pattern>, simple_case::Expr)]) -> usize {
+        // ベクトルをスタックの代用としているので先頭から探索するには rpositionを使う
+        clauses[0].0.iter().rposition(|p| !p.is_variable()).unwrap()
     }
 
     fn specialized_patterns<'a, 'b>(
