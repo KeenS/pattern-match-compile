@@ -878,10 +878,10 @@ impl DecisionTreePatternCompiler {
                 clauses,
             }
         } else {
-            let default = self.default_patterns(sym.clone(), cond, clause_with_heads.iter());
+            let default = self.default_patterns(sym.clone(), clause_with_heads.iter());
             clauses.push((
                 simple_case::Pattern::Variable(self.symbol_generator.gensym("_")),
-                default,
+                self.compile(cond, default),
             ));
             simple_case::Expr::Case {
                 cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
@@ -907,28 +907,37 @@ impl DecisionTreePatternCompiler {
         let param_ty = self.type_db.param_ty_of(&type_id, descriminant);
         clause_with_heads
             .filter_map(|(head, clause)| match head {
+                // descriminantが一致するコンストラクタパターンはそのままあつめる
                 case::Pattern::Constructor {
                     descriminant: d,
                     pattern,
                 } if *d == descriminant => Some((pattern.clone().map(|p| *p), clause.clone())),
+                // 変数パターンは無条件で集めるが、
+                // 腕やパターンに小細工が必要
                 case::Pattern::Variable(var) => {
-                    let pattern = param_ty
-                        .as_ref()
-                        .map(|_| self.symbol_generator.gensym("_"))
-                        .map(case::Pattern::Variable);
+                    let extra_pattern = if param_ty.is_some() {
+                        let var = self.symbol_generator.gensym("_");
+                        Some(case::Pattern::Variable(var))
+                    } else {
+                        None
+                    };
 
+                    // pattern => arm を pattern => let val var = c in armに変換
                     let (pat, arm) = clause.clone();
                     let arm = simple_case::Expr::Let {
                         expr: Box::new(simple_case::Expr::Symbol(cond.clone())),
                         var: var.clone(),
                         body: Box::new(arm),
                     };
-                    Some((pattern, (pat, arm)))
+                    Some((extra_pattern, (pat, arm)))
                 }
+                // descriminantが一致しないコンストラクタは無視
                 _ => None,
             })
-            .map(|(patterns, (mut pat, arm))| {
-                pat.extend(patterns.into_iter().rev());
+            .map(|(extra_pattern, (mut pat, arm))| {
+                if let Some(p) = extra_pattern {
+                    pat.push(p)
+                }
                 (pat, arm)
             })
             .collect()
@@ -937,12 +946,11 @@ impl DecisionTreePatternCompiler {
     fn default_patterns<'a, 'b>(
         &'a mut self,
         sym: Symbol,
-        cond: Stack<(Symbol, TypeId)>,
         clause_with_heads: impl Iterator<
             Item = &'b (case::Pattern, (Stack<case::Pattern>, simple_case::Expr)),
         >,
-    ) -> simple_case::Expr {
-        let clauses = clause_with_heads
+    ) -> Vec<(Stack<case::Pattern>, simple_case::Expr)> {
+        clause_with_heads
             .filter(|(head, _)| head.is_variable())
             .cloned()
             .map(|(p, (pat, arm))| {
@@ -954,8 +962,7 @@ impl DecisionTreePatternCompiler {
                 };
                 (pat, arm)
             })
-            .collect();
-        self.compile(cond, clauses)
+            .collect()
     }
 
     fn is_exhausitive(
@@ -1100,6 +1107,9 @@ impl SimpleToSwitch {
         let result_sym = self.gensym("switch_result");
 
         let (mut stmts, switch_cond) = self.compile_expr(cond);
+        // caseには分岐するcase（データ型に対するパターンマッチ）と分岐しないcase（タプルに対するパターンマッチ）がある。
+        // それをここで判別する。
+        let mut is_branching = true;
 
         for (pat, arm) in clauses {
             let (switch_arm, symbol) = self.compile_expr(arm);
@@ -1120,6 +1130,9 @@ impl SimpleToSwitch {
                         .collect::<Vec<_>>();
                     block.extend(switch_arm);
                     block.push(Stmt::Assign(result_sym.clone(), Op::Symbol(symbol)));
+
+                    is_branching = false;
+                    stmts.extend(block);
                 }
                 simple_case::Pattern::Variable(s) => {
                     let mut block = vec![Stmt::Assign(s.clone(), Op::Symbol(switch_cond.clone()))];
@@ -1148,11 +1161,13 @@ impl SimpleToSwitch {
             }
         }
 
-        stmts.push(Stmt::Switch {
-            cond: switch_cond,
-            targets: switch_clauses,
-            default: default.unwrap_or_else(|| Block(vec![Stmt::Unreachable])),
-        });
+        if is_branching {
+            stmts.push(Stmt::Switch {
+                cond: switch_cond,
+                targets: switch_clauses,
+                default: default.unwrap_or_else(|| Block(vec![Stmt::Unreachable])),
+            });
+        }
         (stmts, result_sym)
     }
 
