@@ -16,7 +16,7 @@ pub trait PP<T> {
 
 impl PP<Symbol> for PrettyPrinter {
     fn pp(&mut self, t: &Symbol) {
-        print!("{}@{}", t.1, t.0)
+        print!("{}@{}", t.0, t.1)
     }
 }
 
