@@ -199,6 +199,17 @@ mod case {
         pub fn find(&self, type_id: &TypeId) -> Option<&Type> {
             self.0.get(type_id)
         }
+
+        pub fn param_ty_of(&self, type_id: &TypeId, descriminant: u8) -> Option<TypeId> {
+            self.find(type_id)
+                .cloned()
+                .unwrap()
+                .adt()
+                .into_iter()
+                .find(|c| c.descriminant == descriminant)
+                .map(|c| c.param)
+                .unwrap()
+        }
     }
 }
 
@@ -579,16 +590,7 @@ impl BackTrackPatternCompiler {
                 // 対象にしているdescriminantをもつ列挙子の、
                 // 引数があればその、
                 // 型を取得する
-                let param_ty = self
-                    .type_db
-                    .find(&ty)
-                    .cloned()
-                    .unwrap()
-                    .adt()
-                    .into_iter()
-                    .find(|c| c.descriminant == descriminant)
-                    .map(|c| c.param)
-                    .unwrap();
+                let param_ty = self.type_db.param_ty_of(&ty, descriminant);
                 // 引数があれば一時変数を生成し、条件変数に追加する
                 let tmp_var = param_ty.as_ref().map(|_| self.symbol_generator.gensym("v"));
                 let mut new_cond = cond.clone();
@@ -853,16 +855,9 @@ impl DecisionTreePatternCompiler {
                     descriminant,
                     clause_with_heads.iter(),
                 );
-                let param_ty = self
-                    .type_db
-                    .find(&ty)
-                    .cloned()
-                    .unwrap()
-                    .adt()
-                    .into_iter()
-                    .find(|c| c.descriminant == descriminant)
-                    .map(|c| c.param)
-                    .unwrap();
+                // 本来ならコンストラクタごとに、引数の有無で処理が微妙に変わる。
+                // そこを `Option` 型のメソッドで違いを吸収している。
+                let param_ty = self.type_db.param_ty_of(&ty, descriminant);
                 let tmp_var = param_ty.clone().map(|_| self.symbol_generator.gensym("v"));
                 let mut new_cond = cond.clone();
                 new_cond.extend(tmp_var.iter().cloned().zip(param_ty).rev());
@@ -909,16 +904,7 @@ impl DecisionTreePatternCompiler {
             Item = &'b (case::Pattern, (Stack<case::Pattern>, simple_case::Expr)),
         >,
     ) -> Vec<(Stack<case::Pattern>, simple_case::Expr)> {
-        let param_ty = self
-            .type_db
-            .find(&type_id)
-            .cloned()
-            .unwrap()
-            .adt()
-            .into_iter()
-            .find(|c| c.descriminant == descriminant)
-            .map(|c| c.param)
-            .unwrap();
+        let param_ty = self.type_db.param_ty_of(&type_id, descriminant);
         clause_with_heads
             .filter_map(|(head, clause)| match head {
                 case::Pattern::Constructor {
