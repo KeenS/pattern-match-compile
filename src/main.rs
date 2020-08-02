@@ -1229,6 +1229,30 @@ fn main() {
         ],
     );
 
+    type_db.register_tuple(
+        TypeId::new("2list"),
+        vec![TypeId::new("list"), TypeId::new("list")],
+    );
+
+    type_db.register_tuple(
+        TypeId::new("cons"),
+        vec![TypeId::new("unit"), TypeId::new("list")],
+    );
+
+    type_db.register_adt(
+        TypeId::new("list"),
+        vec![
+            case::Constructor {
+                descriminant: 0,
+                param: None,
+            },
+            case::Constructor {
+                descriminant: 1,
+                param: Some(TypeId::new("cons")),
+            },
+        ],
+    );
+
     let mut sg = SymbolGenerator::new();
 
     let m = {
@@ -1351,7 +1375,7 @@ fn main() {
             pattern: None,
         };
 
-        // 2要素タプルの便利メソッド
+        // 2要素タプルパターンの便利メソッド
         fn tuple2p(p1: Pattern, p2: Pattern) -> Pattern {
             Pattern::Tuple(vec![p1, p2])
         }
@@ -1373,13 +1397,80 @@ fn main() {
         }
     };
 
+    let m3 = {
+        use case::*;
+        use Expr::*;
+
+        // `Nil` （値）のつもり
+        let nilv = Expr::Inject {
+            descriminant: 0,
+            data: None,
+        };
+
+        // `Cons` （コンストラクタ）のつもり
+        fn consv(arg: Expr) -> Expr {
+            Expr::Inject {
+                descriminant: 1,
+                data: Some(Box::new(arg)),
+            }
+        }
+
+        // `()` （値）のつもり
+        let unitv = Expr::Tuple(vec![]);
+
+        // 2要素タプルパターンの便利メソッド
+        fn tuple2p(p1: Pattern, p2: Pattern) -> Pattern {
+            Pattern::Tuple(vec![p1, p2])
+        }
+
+        // `Nil` （パターン）のつもり
+        let nilp = Pattern::Constructor {
+            descriminant: 0,
+            pattern: None,
+        };
+
+        // `Cons` （パターン）のつもり
+        fn consp(car: Pattern, cdr: Pattern) -> Pattern {
+            Pattern::Constructor {
+                descriminant: 1,
+                pattern: Some(Box::new(tuple2p(car, cdr))),
+            }
+        }
+
+        // _ パターン。
+        // 衝突しないために毎度シンボルジェネレータを使って生成する
+        fn wild(sg: &mut SymbolGenerator) -> Pattern {
+            Pattern::Variable(sg.gensym("_"))
+        }
+
+        // case (Nil, Nil) of
+        //     (Nil, _) => ()
+        //   | (_, Nil) => ()
+        //   | (Cons(_, _), Cons(_, _)) => ()
+        Case {
+            cond: Box::new(Tuple(vec![nilv.clone(), nilv.clone()])),
+            ty: TypeId::new("2list"),
+            clauses: vec![
+                (tuple2p(nilp.clone(), wild(&mut sg)), unitv.clone()),
+                (tuple2p(wild(&mut sg), nilp.clone()), unitv.clone()),
+                (
+                    tuple2p(
+                        consp(wild(&mut sg), wild(&mut sg)),
+                        consp(wild(&mut sg), wild(&mut sg)),
+                    ),
+                    unitv.clone(),
+                ),
+            ],
+        }
+    };
+
     let mut p = PrettyPrinter::new();
-    p.pp(&m2);
+    p.pp(&m3);
 
     println!("");
     println!("evaled to");
     let mut interpreter = CaseInterp::new();
-    let v = interpreter.eval(m2.clone());
+    let v = interpreter.eval(m3.clone());
 
     match v {
         Ok(v) => {
@@ -1390,14 +1481,14 @@ fn main() {
     }
 
     println!("");
-    p.pp(&m);
+    p.pp(&m3);
     println!("");
     println!("case to simple (backtrack)");
     let mut compiler = CaseToSimple::new(
         sg.clone(),
         BackTrackPatternCompiler::new(sg.clone(), type_db.clone()),
     );
-    let c = compiler.compile(m.clone());
+    let c = compiler.compile(m3.clone());
     p.pp(&c);
 
     println!("simple to switch");
@@ -1412,7 +1503,7 @@ fn main() {
         sg.clone(),
         DecisionTreePatternCompiler::new(sg.clone(), type_db.clone()),
     );
-    let c2 = compiler2.compile(m);
+    let c2 = compiler2.compile(m3);
     p.pp(&c2);
 
     println!("simple to switch");
