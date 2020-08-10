@@ -321,6 +321,11 @@ mod simple_case {
             cond: Box<Expr>,
             clauses: Vec<(Pattern, Expr)>,
         },
+        RaiseMatch,
+        HandleMatch {
+            expr: Box<Expr>,
+            handler: Box<Expr>,
+        },
         Symbol(Symbol),
     }
 
@@ -352,6 +357,8 @@ mod switch {
             targets: Vec<(i32, Block)>,
             default: Block,
         },
+        Label(Symbol),
+        Goto(Symbol),
         Unreachable,
         Ret(Symbol),
     }
@@ -457,28 +464,27 @@ impl BackTrackPatternCompiler {
         &mut self,
         cond: Stack<(Symbol, TypeId)>,
         clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
-        default: Option<simple_case::Expr>,
     ) -> simple_case::Expr {
         // assuming clauses.any(|(patterns, _)| patterns.len() == cond.len())
         if cond.len() == 0 {
-            self.compile_empty(cond, clauses, default)
+            self.compile_empty(cond, clauses)
         } else if clauses
             .iter()
             .all(|(patterns, _)| patterns.last().unwrap().is_variable())
         {
-            self.compile_variable(cond, clauses, default)
+            self.compile_variable(cond, clauses)
         } else if clauses
             .iter()
             .all(|(patterns, _)| patterns.last().unwrap().is_tuple())
         {
-            self.compile_tuple(cond, clauses, default)
+            self.compile_tuple(cond, clauses)
         } else if clauses
             .iter()
             .all(|(patterns, _)| patterns.last().unwrap().is_constructor())
         {
-            self.compile_constructor(cond, clauses, default)
+            self.compile_constructor(cond, clauses)
         } else {
-            self.compile_mixture(cond, clauses, default)
+            self.compile_mixture(cond, clauses)
         }
     }
 
@@ -486,7 +492,6 @@ impl BackTrackPatternCompiler {
         &mut self,
         _: Stack<(Symbol, TypeId)>,
         mut clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
-        _: Option<simple_case::Expr>,
     ) -> simple_case::Expr {
         // because we don't have warning system, just panicing instead
         match clauses.len() {
@@ -500,7 +505,6 @@ impl BackTrackPatternCompiler {
         &mut self,
         mut cond: Stack<(Symbol, TypeId)>,
         clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
-        default: Option<simple_case::Expr>,
     ) -> simple_case::Expr {
         // 条件変数の最初のものと、各節のパターンの最初のものを処理する
         let (sym, _) = cond.pop().unwrap();
@@ -518,14 +522,13 @@ impl BackTrackPatternCompiler {
                 )
             })
             .collect();
-        self.compile(cond, clauses, default)
+        self.compile(cond, clauses)
     }
 
     fn compile_tuple(
         &mut self,
         mut cond: Stack<(Symbol, TypeId)>,
         clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
-        default: Option<simple_case::Expr>,
     ) -> simple_case::Expr {
         let (sym, ty) = cond.pop().unwrap();
 
@@ -553,7 +556,7 @@ impl BackTrackPatternCompiler {
             cond: Box::new(simple_case::Expr::Symbol(sym)),
             clauses: vec![(
                 simple_case::Pattern::Tuple(tmp_vars),
-                self.compile(new_cond, clauses, default),
+                self.compile(new_cond, clauses),
             )],
         }
     }
@@ -562,7 +565,6 @@ impl BackTrackPatternCompiler {
         &mut self,
         mut cond: Stack<(Symbol, TypeId)>,
         clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
-        default: Option<simple_case::Expr>,
     ) -> simple_case::Expr {
         let (sym, ty) = cond.pop().unwrap();
         // 各節をパターンの先頭とそれ以外に分解。
@@ -601,37 +603,28 @@ impl BackTrackPatternCompiler {
                         descriminant,
                         data: tmp_var,
                     },
-                    // ↓ ここでdefaultがコピーされる
-                    self.compile(new_cond, clauses, default.clone()),
+                    self.compile(new_cond, clauses),
                 )
             })
             .collect();
 
-        // 列挙子が網羅的かどうかで挙動が変わる
+        // 列挙子が網羅的かどうかで挙動を変える。
         if self.is_exhausitive(&ty, descriminants) {
-            // 網羅的なのに後続のパターンがあれば、冗長
-            if default.is_some() {
-                panic!("redundant pattern")
-            }
-            simple_case::Expr::Case {
-                cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
-                clauses,
-            }
-        } else if let Some(default) = default {
-            // 網羅的でないなら必ず後続の式が存在する
-
-            // 後続の式は `_ => rest` の形で埋め込む
-            clauses.push((
-                simple_case::Pattern::Variable(self.symbol_generator.gensym("_")),
-                default,
-            ));
             simple_case::Expr::Case {
                 cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
                 clauses,
             }
         } else {
-            // 列挙子が網羅的でないのに後続のパターンが存在しないならパターンマッチ全体が非網羅的
-            panic!("pattern is not exhausitive")
+            // 網羅的でないならパターンマッチの末尾に `_ => raise Match` を加える
+            clauses.push((
+                simple_case::Pattern::Variable(self.symbol_generator.gensym("_")),
+                simple_case::Expr::RaiseMatch,
+            ));
+
+            simple_case::Expr::Case {
+                cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
+                clauses,
+            }
         }
     }
 
@@ -639,7 +632,6 @@ impl BackTrackPatternCompiler {
         &mut self,
         cond: Stack<(Symbol, TypeId)>,
         clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
-        default: Option<simple_case::Expr>,
     ) -> simple_case::Expr {
         // 先頭のパターンと違うものが出現した箇所でパターン行列を分割する
         let head_pattern_type = clauses[0].0.last().unwrap().pattern_type();
@@ -648,10 +640,15 @@ impl BackTrackPatternCompiler {
             .position(|(pat, _)| pat.last().unwrap().pattern_type() != head_pattern_type)
             .unwrap();
         let (clauses, other) = clauses.split_at(pos);
-        // 分割した残りの方をdefaultとし、コンパイルしておく。
-        let default = self.compile(cond.clone(), other.to_vec(), default);
+        // 分割した残りの方をfallbackとし、コンパイルしておく。
+        let fallback = self.compile(cond.clone(), other.to_vec());
         // 再帰コンパイル
-        self.compile(cond, clauses.to_vec(), Some(default))
+        let expr = self.compile(cond, clauses.to_vec());
+
+        simple_case::Expr::HandleMatch {
+            expr: Box::new(expr),
+            handler: Box::new(fallback),
+        }
     }
 
     fn specialize<'a, 'b>(
@@ -700,7 +697,7 @@ impl PatternCompiler for BackTrackPatternCompiler {
         cond: Vec<(Symbol, TypeId)>,
         clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
     ) -> simple_case::Expr {
-        self.compile(cond, clauses, None)
+        self.compile(cond, clauses)
     }
 }
 
@@ -994,11 +991,15 @@ impl PatternCompiler for DecisionTreePatternCompiler {
 
 struct SimpleToSwitch {
     symbol_generator: SymbolGenerator,
+    local_handler_labels: Vec<Symbol>,
 }
 
 impl SimpleToSwitch {
     pub fn new(symbol_generator: SymbolGenerator) -> Self {
-        Self { symbol_generator }
+        Self {
+            symbol_generator,
+            local_handler_labels: Vec::new(),
+        }
     }
 
     pub fn compile(&mut self, case: simple_case::Expr) -> switch::Block {
@@ -1015,6 +1016,10 @@ impl SimpleToSwitch {
                 self.compile_inject(descriminant, data.map(|d| *d))
             }
             simple_case::Expr::Case { cond, clauses } => self.compile_case(*cond, clauses),
+            simple_case::Expr::RaiseMatch => self.compile_raise_match(),
+            simple_case::Expr::HandleMatch { expr, handler } => {
+                self.compile_handle_match(*expr, *handler)
+            }
             simple_case::Expr::Symbol(s) => self.compile_symbol(s),
         }
     }
@@ -1169,6 +1174,57 @@ impl SimpleToSwitch {
             });
         }
         (stmts, result_sym)
+    }
+
+    fn compile_raise_match(&mut self) -> (Vec<switch::Stmt>, Symbol) {
+        use switch::Stmt;
+        let label = self
+            .local_handler_labels
+            .last()
+            .expect("internal error: Match will not be handled")
+            .clone();
+
+        (
+            vec![Stmt::Goto(label)],
+            self.symbol_generator.gensym("undefined"),
+        )
+    }
+
+    fn compile_handle_match(
+        &mut self,
+        expr: simple_case::Expr,
+        handler: simple_case::Expr,
+    ) -> (Vec<switch::Stmt>, Symbol) {
+        use switch::{Op, Stmt};
+
+        let catch = self.symbol_generator.gensym("catch");
+        let finally = self.symbol_generator.gensym("finally");
+        let result_sym = self.symbol_generator.gensym("handle_result");
+        self.local_handler_labels.push(catch.clone());
+        let (mut expr_bb, expr_sym) = self.compile_expr(expr);
+        let (mut handler_bb, handler_sym) = self.compile_expr(handler);
+
+        //   expr
+        //   ...
+        //   var := ...
+        //   handle_result := var
+        //   goto finally
+        // catch:
+        //   handler
+        //   ...
+        //   var' := ...
+        //   handle_result := var'
+        // finally:
+        //   ...
+        expr_bb.push(Stmt::Assign(result_sym.clone(), Op::Symbol(expr_sym)));
+        expr_bb.push(Stmt::Goto(finally.clone()));
+        handler_bb.insert(0, Stmt::Label(catch));
+        handler_bb.push(Stmt::Assign(result_sym.clone(), Op::Symbol(handler_sym)));
+        handler_bb.push(Stmt::Label(finally));
+
+        expr_bb.extend(handler_bb);
+
+        (expr_bb, result_sym)
     }
 
     fn compile_symbol(&mut self, s: Symbol) -> (Vec<switch::Stmt>, Symbol) {

@@ -8,6 +8,22 @@ impl PrettyPrinter {
     pub fn new() -> Self {
         Self { indent: 0 }
     }
+
+    pub fn indent(&mut self) {
+        self.indent += 4;
+    }
+
+    pub fn indent_half(&mut self) {
+        self.indent += 2;
+    }
+
+    pub fn dedent(&mut self) {
+        self.indent -= 4;
+    }
+
+    pub fn dedent_half(&mut self) {
+        self.indent -= 2;
+    }
 }
 
 pub trait PP<T> {
@@ -48,17 +64,17 @@ mod case {
                     print!("case ");
                     self.pp(&**cond);
                     print!(" of\n");
-                    self.indent += 4;
+                    self.indent();
                     for (pat, arm) in clauses {
                         print!("{: >1$} ", "|", self.indent);
                         self.pp(pat);
                         print!(" => ");
-                        self.indent += 4;
+                        self.indent();
                         self.pp(arm);
-                        self.indent -= 4;
+                        self.dedent();
                         print!("\n");
                     }
-                    self.indent -= 4;
+                    self.dedent();
                 }
                 Symbol(s) => self.pp(s),
             }
@@ -152,21 +168,31 @@ mod simple_case {
                     }
                     print!(")");
                 }
+                RaiseMatch => {
+                    print!("raise Match");
+                }
+                HandleMatch { expr, handler } => {
+                    self.pp(&**expr);
+                    print!(" handle Match =>");
+                    self.indent();
+                    self.pp(&**handler);
+                    self.dedent();
+                }
                 Case { cond, clauses } => {
                     print!("case ");
                     self.pp(&**cond);
                     print!(" of\n");
-                    self.indent += 4;
+                    self.indent();
                     for (pat, arm) in clauses {
                         print!("{: >1$} ", "|", self.indent);
                         self.pp(pat);
                         print!(" => ");
-                        self.indent += 4;
+                        self.indent();
                         self.pp(arm);
-                        self.indent -= 4;
+                        self.dedent();
                         print!("\n");
                     }
-                    self.indent -= 4;
+                    self.dedent();
                 }
                 Symbol(s) => self.pp(s),
             }
@@ -206,13 +232,11 @@ mod switch {
     impl PP<Block> for PrettyPrinter {
         fn pp(&mut self, t: &Block) {
             print!("{{\n");
-            self.indent += 4;
+            self.indent();
             for stmt in &t.0 {
-                print!("{: >1$}", "", self.indent);
                 self.pp(stmt);
-                print!(";\n");
             }
-            self.indent -= 4;
+            self.dedent();
             print!("{: >1$}", "", self.indent);
             print!("}}\n");
         }
@@ -223,26 +247,31 @@ mod switch {
             use Stmt::*;
             match t {
                 Assign(s, op) => {
+                    print!("{: >1$}", "", self.indent);
                     self.pp(s);
                     print!(" := ");
                     self.pp(op);
+                    print!(";\n");
                 }
                 Store { base, offset, data } => {
+                    print!("{: >1$}", "", self.indent);
                     print!("store(");
                     self.pp(base);
                     print!(" + {}, ", offset);
                     self.pp(data);
-                    print!(")")
+                    print!(")");
+                    print!(";\n");
                 }
                 Switch {
                     cond,
                     targets,
                     default,
                 } => {
+                    print!("{: >1$}", "", self.indent);
                     print!("switch(");
                     self.pp(cond);
                     print!(") {{\n");
-                    self.indent += 4;
+                    self.indent();
                     for (label, block) in targets {
                         print!("{: >1$}", "", self.indent);
                         print!("case {}: ", label);
@@ -253,14 +282,34 @@ mod switch {
                     print!("default: ");
                     self.pp(default);
                     print!("\n");
-                    self.indent -= 4;
+                    self.dedent();
                     print!("{: >1$}", "", self.indent);
                     print!("}}");
+                    print!(";\n");
                 }
-                Unreachable => print!("UNREACHABLE"),
+                Label(label) => {
+                    self.dedent_half();
+                    print!("{: >1$}", "", self.indent);
+                    self.pp(label);
+                    print!(":");
+                    self.indent_half();
+                }
+                Goto(label) => {
+                    print!("{: >1$}", "", self.indent);
+                    print!("goto ");
+                    self.pp(label);
+                    print!(";\n");
+                }
+                Unreachable => {
+                    print!("{: >1$}", "", self.indent);
+                    print!("UNREACHABLE");
+                    print!(";\n");
+                }
                 Ret(s) => {
+                    print!("{: >1$}", "", self.indent);
                     print!("return ");
-                    self.pp(s)
+                    self.pp(s);
+                    print!(";\n");
                 }
             }
         }
