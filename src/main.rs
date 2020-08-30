@@ -42,11 +42,12 @@ impl TypeId {
 mod case {
     use super::*;
 
+    /// 式
     #[derive(Debug, Clone)]
     pub enum Expr {
         /// (expr1, expr2, ...)
         Tuple(Vec<Expr>),
-        /// Constructor expr
+        /// inj<descriminant>(data)
         Inject {
             descriminant: u8,
             data: Option<Box<Expr>>,
@@ -61,23 +62,30 @@ mod case {
         Symbol(Symbol),
     }
 
-    #[derive(Debug, Clone)]
-    pub enum Value {
-        Tuple(Vec<Value>),
-        Constructor {
-            descriminant: u8,
-            value: Option<Box<Value>>,
-        },
-    }
-
+    /// パターン
     #[derive(Debug, Clone)]
     pub enum Pattern {
+        /// (pat1, pat2, ...)
         Tuple(Vec<Pattern>),
+        /// c<descriminant>(pattern)
         Constructor {
             descriminant: u8,
             pattern: Option<Box<Pattern>>,
         },
+        /// x
         Variable(Symbol),
+    }
+
+    /// 値
+    #[derive(Debug, Clone)]
+    pub enum Value {
+        /// (value1, value2, ...)
+        Tuple(Vec<Value>),
+        /// c<descriminant>(value)
+        Constructor {
+            descriminant: u8,
+            value: Option<Box<Value>>,
+        },
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,15 +186,18 @@ mod case {
     #[derive(Debug, Clone)]
     pub struct TypeDb(HashMap<TypeId, Type>);
     impl TypeDb {
+        /// コンストラクタ
         pub fn new() -> Self {
             Self(HashMap::new())
         }
 
+        /// タプル型の登録
         pub fn register_tuple(&mut self, type_id: TypeId, tys: impl IntoIterator<Item = TypeId>) {
             self.0
                 .insert(type_id, Type::Tuple(tys.into_iter().collect()));
         }
 
+        /// 代数的データ型の登録
         pub fn register_adt(
             &mut self,
             type_id: TypeId,
@@ -196,6 +207,7 @@ mod case {
                 .insert(type_id, Type::Adt(constructors.into_iter().collect()));
         }
 
+        /// 参照
         pub fn find(&self, type_id: &TypeId) -> Option<&Type> {
             self.0.get(type_id)
         }
@@ -234,7 +246,10 @@ impl CaseInterp {
             // タプルならそれぞれの要素を評価したあとにタプルを作る
             Tuple(tuple) => tuple
                 .into_iter()
+                // case::Expr -> Result<case::Value, Match>
                 .map(|e| self.eval(e))
+                // 普通に集めると Vec<Result<case::Value, Match>> だが、
+                // Rustは注釈を与えればResultとVecを入れ替えられる
                 .collect::<Result<Vec<_>, Match>>()
                 .map(case::Value::Tuple),
             // `case` 式ならパターンマッチをする（後述）
@@ -304,38 +319,46 @@ impl CaseInterp {
 mod simple_case {
     use super::*;
 
+    /// 式
     #[derive(Debug, Clone)]
     pub enum Expr {
+        /// (expr1, expr2, ...)
         Tuple(Vec<Expr>),
-
+        /// let val var = expr in body end
         Let {
             var: Symbol,
             expr: Box<Expr>,
             body: Box<Expr>,
         },
+        /// inj<descriminant>(data)
         Inject {
             descriminant: u8,
             data: Option<Box<Expr>>,
         },
+        /// case cond of pattern1 => expr1 | pattern2 => expr2 ...
         Case {
             cond: Box<Expr>,
             clauses: Vec<(Pattern, Expr)>,
         },
-        RaiseMatch,
-        HandleMatch {
-            expr: Box<Expr>,
-            handler: Box<Expr>,
-        },
+        /// raise Fail;
+        RaiseFail,
+        /// expr handle Fail => handler
+        HandleFail { expr: Box<Expr>, handler: Box<Expr> },
+        /// x
         Symbol(Symbol),
     }
 
+    /// パターン
     #[derive(Debug, Clone)]
     pub enum Pattern {
+        /// (pat1, pat2, ...)
         Tuple(Vec<Symbol>),
+        /// c<descriminant>(data)
         Constructor {
             descriminant: u8,
             data: Option<Symbol>,
         },
+        /// x
         Variable(Symbol),
     }
 }
@@ -343,30 +366,52 @@ mod simple_case {
 mod switch {
     use super::*;
 
+    /// ブロック（文のかたまり）
     pub struct Block(pub Vec<Stmt>);
 
+    /// 文
     pub enum Stmt {
+        /// x := op;
         Assign(Symbol, Op),
+        /// store(base+offset, data);
         Store {
             base: Symbol,
             offset: u8,
             data: Symbol,
         },
+        /// switch(cond) {
+        ///   target: {
+        ///     block
+        ///   }
+        ///   ...
+        ///   defalut: {
+        ///     default
+        ///   }
+        /// };
         Switch {
             cond: Symbol,
             targets: Vec<(i32, Block)>,
             default: Block,
         },
+        /// label:
         Label(Symbol),
+        /// goto label;
         Goto(Symbol),
+        /// UNREACHABLE;
         Unreachable,
+        /// return x;
         Ret(Symbol),
     }
 
+    /// 操作。x := の右側に書けるもの。
     pub enum Op {
+        /// alloc(size);
         Alloc { size: u8 },
+        /// load(base+offset);
         Load { base: Symbol, offset: u8 },
+        /// x
         Symbol(Symbol),
+        /// 1
         Const(i32),
     }
 }
@@ -615,10 +660,10 @@ impl BackTrackPatternCompiler {
                 clauses,
             }
         } else {
-            // 網羅的でないならパターンマッチの末尾に `_ => raise Match` を加える
+            // 網羅的でないならパターンマッチの末尾に `_ => raise Fail` を加える
             clauses.push((
                 simple_case::Pattern::Variable(self.symbol_generator.gensym("_")),
-                simple_case::Expr::RaiseMatch,
+                simple_case::Expr::RaiseFail,
             ));
 
             simple_case::Expr::Case {
@@ -645,7 +690,7 @@ impl BackTrackPatternCompiler {
         // 再帰コンパイル
         let expr = self.compile(cond, clauses.to_vec());
 
-        simple_case::Expr::HandleMatch {
+        simple_case::Expr::HandleFail {
             expr: Box::new(expr),
             handler: Box::new(fallback),
         }
@@ -1016,9 +1061,9 @@ impl SimpleToSwitch {
                 self.compile_inject(descriminant, data.map(|d| *d))
             }
             simple_case::Expr::Case { cond, clauses } => self.compile_case(*cond, clauses),
-            simple_case::Expr::RaiseMatch => self.compile_raise_match(),
-            simple_case::Expr::HandleMatch { expr, handler } => {
-                self.compile_handle_match(*expr, *handler)
+            simple_case::Expr::RaiseFail => self.compile_raise_fail(),
+            simple_case::Expr::HandleFail { expr, handler } => {
+                self.compile_handle_fail(*expr, *handler)
             }
             simple_case::Expr::Symbol(s) => self.compile_symbol(s),
         }
@@ -1176,12 +1221,12 @@ impl SimpleToSwitch {
         (stmts, result_sym)
     }
 
-    fn compile_raise_match(&mut self) -> (Vec<switch::Stmt>, Symbol) {
+    fn compile_raise_fail(&mut self) -> (Vec<switch::Stmt>, Symbol) {
         use switch::Stmt;
         let label = self
             .local_handler_labels
             .last()
-            .expect("internal error: Match will not be handled")
+            .expect("internal error: Fail will not be handled")
             .clone();
 
         (
@@ -1190,7 +1235,7 @@ impl SimpleToSwitch {
         )
     }
 
-    fn compile_handle_match(
+    fn compile_handle_fail(
         &mut self,
         expr: simple_case::Expr,
         handler: simple_case::Expr,
@@ -1412,22 +1457,22 @@ fn main() {
 
         // `false` （値）のつもり
         let falsev = Expr::Inject {
-            descriminant: 0,
+            descriminant: 1,
             data: None,
         };
         // `true` （値）のつもり
         let truev = Expr::Inject {
-            descriminant: 1,
+            descriminant: 0,
             data: None,
         };
         // `false` （パターン）のつもり
         let falsep = Pattern::Constructor {
-            descriminant: 0,
+            descriminant: 1,
             pattern: None,
         };
         // `true` （パターン）のつもり
         let truep = Pattern::Constructor {
-            descriminant: 1,
+            descriminant: 0,
             pattern: None,
         };
 
@@ -1521,12 +1566,12 @@ fn main() {
     };
 
     let mut p = PrettyPrinter::new();
-    p.pp(&m3);
+    p.pp(&m);
 
     println!("");
     println!("evaled to");
     let mut interpreter = CaseInterp::new();
-    let v = interpreter.eval(m3.clone());
+    let v = interpreter.eval(m.clone());
 
     match v {
         Ok(v) => {
