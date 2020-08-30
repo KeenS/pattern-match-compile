@@ -168,12 +168,12 @@ mod simple_case {
                     }
                     print!(")");
                 }
-                RaiseMatch => {
-                    print!("raise Match");
+                RaiseFail => {
+                    print!("raise Fail");
                 }
-                HandleMatch { expr, handler } => {
+                HandleFail { expr, handler } => {
                     self.pp(&**expr);
-                    print!(" handle Match =>");
+                    print!(" handle Fail =>");
                     self.indent();
                     self.pp(&**handler);
                     self.dedent();
