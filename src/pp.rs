@@ -168,6 +168,9 @@ mod simple_case {
                     }
                     print!(")");
                 }
+                RaiseMatch => {
+                    print!("raise Match");
+                }
                 RaiseFail => {
                     print!("raise Fail");
                 }
@@ -293,6 +296,10 @@ mod switch {
                     self.pp(label);
                     print!(":");
                     self.indent_half();
+                }
+                RaiseMatch => {
+                    print!("{: >1$}", "", self.indent);
+                    print!("sml_raise(SML_EXN_MATCH)");
                 }
                 Goto(label) => {
                     print!("{: >1$}", "", self.indent);

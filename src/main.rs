@@ -340,6 +340,8 @@ mod simple_case {
             cond: Box<Expr>,
             clauses: Vec<(Pattern, Expr)>,
         },
+        /// raise Match;
+        RaiseMatch,
         /// raise Fail;
         RaiseFail,
         /// expr handle Fail => handler
@@ -395,6 +397,8 @@ mod switch {
         },
         /// label:
         Label(Symbol),
+        /// sml_raise(SML_EXN_MATCH);
+        RaiseMatch,
         /// goto label;
         Goto(Symbol),
         /// UNREACHABLE;
@@ -742,7 +746,12 @@ impl PatternCompiler for BackTrackPatternCompiler {
         cond: Vec<(Symbol, TypeId)>,
         clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
     ) -> simple_case::Expr {
-        self.compile(cond, clauses)
+        let expr = self.compile(cond, clauses);
+        // 拾いきれなかったFail(=パターンの不足)を拾ってMatch例外にする
+        simple_case::Expr::HandleFail {
+            expr: Box::new(expr),
+            handler: Box::new(simple_case::Expr::RaiseMatch),
+        }
     }
 }
 
@@ -1061,6 +1070,7 @@ impl SimpleToSwitch {
                 self.compile_inject(descriminant, data.map(|d| *d))
             }
             simple_case::Expr::Case { cond, clauses } => self.compile_case(*cond, clauses),
+            simple_case::Expr::RaiseMatch => self.compile_raise_match(),
             simple_case::Expr::RaiseFail => self.compile_raise_fail(),
             simple_case::Expr::HandleFail { expr, handler } => {
                 self.compile_handle_fail(*expr, *handler)
@@ -1073,12 +1083,15 @@ impl SimpleToSwitch {
         use switch::{Op, Stmt};
         let mut stmts = vec![];
         let mut symbols = vec![];
+
+        // 各データのコンパイル
         for e in es {
             let (s, sym) = self.compile_expr(e);
             stmts.extend(s);
             symbols.push(sym);
         }
 
+        // タプルの構成
         let t = self.gensym("tuple");
         stmts.push(Stmt::Assign(
             t.clone(),
@@ -1119,16 +1132,19 @@ impl SimpleToSwitch {
         let mut ret = Vec::new();
         let size = (data.is_some() as u8) + 1;
 
+        // descriminantの部分
         let des = self.gensym("des");
         ret.push(Stmt::Assign(des.clone(), Op::Const(descriminant as i32)));
 
-        let mut syms = Vec::new();
-        for d in data.into_iter() {
+        // dataの部分
+        let mut data_sym = None;
+        if let Some(d) = data {
             let (stmts, d) = self.compile_expr(d);
             ret.extend(stmts);
-            syms.push(d);
+            data_sym = Some(d)
         }
 
+        // injectの構成
         let v = self.gensym("v");
         ret.push(Stmt::Assign(v.clone(), Op::Alloc { size }));
         ret.push(Stmt::Store {
@@ -1136,10 +1152,10 @@ impl SimpleToSwitch {
             offset: 0,
             data: des.clone(),
         });
-        for (i, sym) in syms.into_iter().enumerate() {
+        if let Some(sym) = data_sym {
             ret.push(Stmt::Store {
                 base: v.clone(),
-                offset: (i as u8) + 1,
+                offset: 1,
                 data: sym,
             })
         }
@@ -1156,13 +1172,15 @@ impl SimpleToSwitch {
         let mut switch_clauses = Vec::new();
         let result_sym = self.gensym("switch_result");
 
+        // まずcondをコンパイルする
         let (mut stmts, switch_cond) = self.compile_expr(cond);
-        // caseには分岐するcase（データ型に対するパターンマッチ）と分岐しないcase（タプルに対するパターンマッチ）がある。
+        // caseには分岐するcase（代数的データ型に対するパターンマッチ）と分岐しないcase（タプルに対するパターンマッチ）がある。
         // それをここで判別する。
         let mut is_branching = true;
 
         for (pat, arm) in clauses {
             let (switch_arm, symbol) = self.compile_expr(arm);
+            // タプル、代数的データ型、変数へのパターンマッチそれぞれをここで捌く
             match pat {
                 simple_case::Pattern::Tuple(t) => {
                     let mut block = t
@@ -1184,41 +1202,49 @@ impl SimpleToSwitch {
                     is_branching = false;
                     stmts.extend(block);
                 }
-                simple_case::Pattern::Variable(s) => {
-                    let mut block = vec![Stmt::Assign(s.clone(), Op::Symbol(switch_cond.clone()))];
-                    block.extend(switch_arm);
-                    block.push(Stmt::Assign(result_sym.clone(), Op::Symbol(symbol)));
-                    default = Some(Block(block))
-                }
                 simple_case::Pattern::Constructor { descriminant, data } => {
-                    let mut block = data
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, sym)| {
-                            Stmt::Assign(
-                                sym,
-                                Op::Load {
-                                    base: switch_cond.clone(),
-                                    offset: (i + 1) as u8,
-                                },
-                            )
-                        })
-                        .collect::<Vec<_>>();
+                    let mut block = vec![];
+                    if let Some(sym) = data {
+                        block.push(Stmt::Assign(
+                            sym,
+                            Op::Load {
+                                base: switch_cond.clone(),
+                                offset: 1,
+                            },
+                        ));
+                    }
                     block.extend(switch_arm);
                     block.push(Stmt::Assign(result_sym.clone(), Op::Symbol(symbol)));
                     switch_clauses.push((descriminant as i32, Block(block)))
                 }
+                simple_case::Pattern::Variable(s) => {
+                    let mut block = vec![Stmt::Assign(s.clone(), Op::Symbol(switch_cond.clone()))];
+                    block.extend(switch_arm);
+                    block.push(Stmt::Assign(result_sym.clone(), Op::Symbol(symbol)));
+                    // variableは必ずdefault節になる
+                    default = Some(Block(block))
+                }
             }
         }
 
+        // 分岐しないパターンマッチではswitchが不要
         if is_branching {
             stmts.push(Stmt::Switch {
                 cond: switch_cond,
                 targets: switch_clauses,
+                // default節がなければ（=変数パターンがなければ）default節をUNREACHABLEで埋める
                 default: default.unwrap_or_else(|| Block(vec![Stmt::Unreachable])),
             });
         }
         (stmts, result_sym)
+    }
+
+    fn compile_raise_match(&mut self) -> (Vec<switch::Stmt>, Symbol) {
+        use switch::Stmt;
+        (
+            vec![Stmt::RaiseMatch],
+            self.symbol_generator.gensym("undefined"),
+        )
     }
 
     fn compile_raise_fail(&mut self) -> (Vec<switch::Stmt>, Symbol) {
@@ -1247,6 +1273,7 @@ impl SimpleToSwitch {
         let result_sym = self.symbol_generator.gensym("handle_result");
         self.local_handler_labels.push(catch.clone());
         let (mut expr_bb, expr_sym) = self.compile_expr(expr);
+        self.local_handler_labels.pop();
         let (mut handler_bb, handler_sym) = self.compile_expr(handler);
 
         //   expr
