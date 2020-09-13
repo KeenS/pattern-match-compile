@@ -294,12 +294,12 @@ mod switch {
                     self.dedent_half();
                     print!("{: >1$}", "", self.indent);
                     self.pp(label);
-                    print!(":");
+                    print!(":\n");
                     self.indent_half();
                 }
                 RaiseMatch => {
                     print!("{: >1$}", "", self.indent);
-                    print!("sml_raise(SML_EXN_MATCH)");
+                    print!("sml_raise(SML_EXN_MATCH);\n");
                 }
                 Goto(label) => {
                     print!("{: >1$}", "", self.indent);
