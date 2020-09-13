@@ -174,6 +174,7 @@ mod case {
                 _ => panic!("type is not a tuple"),
             }
         }
+
         pub fn adt(self) -> Vec<Constructor> {
             use Type::*;
             match self {
@@ -816,12 +817,14 @@ impl DecisionTreePatternCompiler {
         let pos = self.find_nonvar(&clauses);
         let top = cond.len() - 1;
 
+        // 非変数のパターンをさがして先頭にもってくる
         cond.swap(top, pos);
         for clause in &mut clauses {
             clause.0.swap(top, pos);
         }
 
-        if clauses[0].0[0].is_tuple() {
+        // 先頭にもってきたパターンで場合分け
+        if clauses[0].0[top].is_tuple() {
             self.compile_tuple(cond, clauses)
         } else {
             self.compile_constructor(cond, clauses)
@@ -869,7 +872,13 @@ impl DecisionTreePatternCompiler {
 
         let tmp_vars = self.symbol_generator.gennsyms("v", param_tys.len());
         cond.extend(tmp_vars.iter().cloned().zip(param_tys.clone()).rev());
-        self.compile(cond, clauses)
+        simple_case::Expr::Case {
+            cond: Box::new(simple_case::Expr::Symbol(sym)),
+            clauses: vec![(
+                simple_case::Pattern::Tuple(tmp_vars),
+                self.compile(cond, clauses),
+            )],
+        }
     }
 
     fn compile_constructor(
