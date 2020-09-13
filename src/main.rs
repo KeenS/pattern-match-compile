@@ -1379,10 +1379,12 @@ fn main() {
     type_db.register_adt(
         TypeId::new("list"),
         vec![
+            // Nil
             case::Constructor {
                 descriminant: 0,
                 param: None,
             },
+            // Cons () * List
             case::Constructor {
                 descriminant: 1,
                 param: Some(TypeId::new("cons")),
@@ -1601,13 +1603,15 @@ fn main() {
         }
     };
 
+    let expr = m3;
+
     let mut p = PrettyPrinter::new();
-    p.pp(&m);
+    p.pp(&expr);
 
     println!("");
     println!("evaled to");
     let mut interpreter = CaseInterp::new();
-    let v = interpreter.eval(m.clone());
+    let v = interpreter.eval(expr.clone());
 
     match v {
         Ok(v) => {
@@ -1618,14 +1622,14 @@ fn main() {
     }
 
     println!("");
-    p.pp(&m3);
+    p.pp(&expr);
     println!("");
     println!("case to simple (backtrack)");
     let mut compiler = CaseToSimple::new(
         sg.clone(),
         BackTrackPatternCompiler::new(sg.clone(), type_db.clone()),
     );
-    let c = compiler.compile(m3.clone());
+    let c = compiler.compile(expr.clone());
     p.pp(&c);
 
     println!("simple to switch");
@@ -1640,7 +1644,7 @@ fn main() {
         sg.clone(),
         DecisionTreePatternCompiler::new(sg.clone(), type_db.clone()),
     );
-    let c2 = compiler2.compile(m3);
+    let c2 = compiler2.compile(expr);
     p.pp(&c2);
 
     println!("simple to switch");
