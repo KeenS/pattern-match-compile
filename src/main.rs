@@ -14,12 +14,14 @@ impl SymbolGenerator {
         Self(Rc::new(Cell::new(0)))
     }
 
+    /// 名前のヒントを受け取って既存のシンボルと衝突しないシンボルを生成する
     pub fn gensym(&mut self, hint: impl Into<String>) -> Symbol {
         let id = self.0.get();
         self.0.set(id + 1);
         Symbol(hint.into(), id)
     }
 
+    /// n個のシンボルを生成する
     pub fn gennsyms(&mut self, hint: impl Into<String>, n: usize) -> Vec<Symbol> {
         let hint = hint.into();
         std::iter::repeat_with(|| self.gensym(hint.clone()))
@@ -638,7 +640,7 @@ impl BackTrackPatternCompiler {
                 let clauses = self.specialize(descriminant, clause_with_heads.iter());
                 // Type DBから
                 // 今パターンマッチしている型の、
-                // 対象にしているdescriminantをもつ列挙子の、
+                // 対象にしているdescriminantをもつヴァリアントの、
                 // 引数があればその、
                 // 型を取得する
                 let param_ty = self.type_db.param_ty_of(&ty, descriminant);
@@ -657,7 +659,7 @@ impl BackTrackPatternCompiler {
             })
             .collect();
 
-        // 列挙子が網羅的かどうかで挙動を変える。
+        // ヴァリアントが網羅的かどうかで挙動を変える。
         if self.is_exhausitive(&ty, descriminants) {
             simple_case::Expr::Case {
                 cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
@@ -727,7 +729,7 @@ impl BackTrackPatternCompiler {
         type_id: &TypeId,
         descriminansts: impl IntoIterator<Item = u8>,
     ) -> bool {
-        // descriminantの集合がパターンマッチしている型の列挙子全ての集合と合致するかで検査
+        // descriminantの集合がパターンマッチしている型のヴァリアント全ての集合と合致するかで検査
         self.type_db
             .find(&type_id)
             .cloned()
@@ -1259,6 +1261,7 @@ impl SimpleToSwitch {
         use switch::Stmt;
         let label = self
             .local_handler_labels
+            // スタックの先頭を取り出す
             .last()
             .expect("internal error: Fail will not be handled")
             .clone();
@@ -1279,9 +1282,11 @@ impl SimpleToSwitch {
         let catch = self.symbol_generator.gensym("catch");
         let finally = self.symbol_generator.gensym("finally");
         let result_sym = self.symbol_generator.gensym("handle_result");
+        // 一旦ラベルをpushしてコンパイルしたあと、popする
         self.local_handler_labels.push(catch.clone());
         let (mut expr_bb, expr_sym) = self.compile_expr(expr);
         self.local_handler_labels.pop();
+
         let (mut handler_bb, handler_sym) = self.compile_expr(handler);
 
         //   expr
