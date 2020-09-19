@@ -1,5 +1,4 @@
 mod pp;
-use itertools::Itertools;
 use pp::{PrettyPrinter, PP};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
