@@ -777,7 +777,7 @@ impl DecisionTreePatternCompiler {
         clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
     ) -> simple_case::Expr {
         // assuming clauses.any(|(patterns, _)| patterns.len() == cond.len())
-        if clauses.len() == 0 {
+        if clauses.is_empty() {
             self.compile_empty(cond, clauses)
         } else if clauses[0].0.iter().all(|p| p.is_variable()) {
             self.compile_variable(cond, clauses)
@@ -791,7 +791,7 @@ impl DecisionTreePatternCompiler {
         _: Stack<(Symbol, TypeId)>,
         _: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
     ) -> simple_case::Expr {
-        panic!("non-exhausitive pattern");
+        simple_case::Expr::RaiseMatch
     }
 
     fn compile_variable(
@@ -799,10 +799,14 @@ impl DecisionTreePatternCompiler {
         cond: Stack<(Symbol, TypeId)>,
         mut clauses: Vec<(Stack<case::Pattern>, simple_case::Expr)>,
     ) -> simple_case::Expr {
+        // 先頭行をとりだす
         let (patterns, expr) = clauses.remove(0);
         patterns
+            // 全ての列に対して
             .into_iter()
+            // 変数をしてとりだして
             .map(|p| p.variable())
+            // let val p = c in ... end を作る
             .zip(cond.iter().cloned())
             .fold(expr, |acc, (p, (sym, _))| simple_case::Expr::Let {
                 expr: Box::new(simple_case::Expr::Symbol(sym)),
@@ -844,13 +848,14 @@ impl DecisionTreePatternCompiler {
         // タプルのそれぞれの型を取得
         let param_tys: Vec<TypeId> = self.type_db.find(&ty).cloned().unwrap().tuple();
         let clauses = clauses
+            // それぞれの行の
             .into_iter()
             .map(|(mut patterns, mut arm)| {
-                // それぞれの行の先頭のパターンに対して、
-                // タプルパターンならその場に展開し、
-                // 変数パターンならタプルの要素数と同じ数の `_` を生成する。
+                // 先頭のパターンに対して、
                 let tuple = match patterns.pop().unwrap() {
+                    // タプルパターンならその場に展開し、
                     case::Pattern::Tuple(t) => t,
+                    // 変数パターンならタプルの要素数と同じ数の `_` を生成する。
                     case::Pattern::Variable(var) => {
                         let pattern = self
                             .symbol_generator
@@ -872,8 +877,10 @@ impl DecisionTreePatternCompiler {
             })
             .collect();
 
+        // パターン行列の処理が終わったら条件変数の方にもn個の変数を入れる
         let tmp_vars = self.symbol_generator.gennsyms("v", param_tys.len());
         cond.extend(tmp_vars.iter().cloned().zip(param_tys.clone()).rev());
+        // 条件変数に追加したものと同じ変数で `case cond of (v1, v2, ...) => ...` を作る
         simple_case::Expr::Case {
             cond: Box::new(simple_case::Expr::Symbol(sym)),
             clauses: vec![(
@@ -899,7 +906,7 @@ impl DecisionTreePatternCompiler {
                 (head, clause)
             })
             .collect::<Vec<_>>();
-        // 1. 先頭パターンのコンストラクタを集めてくる
+        // 1. 先頭パターンのコンストラクタの判別子を集めてくる
         let descriminants = clause_with_heads
             .iter()
             .filter_map(|(head, _)| match head {
@@ -907,7 +914,7 @@ impl DecisionTreePatternCompiler {
                 _ => None,
             })
             .collect::<HashSet<_>>();
-        // 2. コンストラクタ毎に特殊化行列を作る
+        // 2. 判別子毎に特殊化行列を作る
         let mut clauses = descriminants
             .iter()
             .map(|&descriminant| {
@@ -923,13 +930,12 @@ impl DecisionTreePatternCompiler {
                 let tmp_var = param_ty.clone().map(|_| self.symbol_generator.gensym("v"));
                 let mut new_cond = cond.clone();
                 new_cond.extend(tmp_var.iter().cloned().zip(param_ty).rev());
-                (
-                    simple_case::Pattern::Constructor {
-                        descriminant,
-                        data: tmp_var,
-                    },
-                    self.compile(new_cond, clauses),
-                )
+                let pat = simple_case::Pattern::Constructor {
+                    descriminant,
+                    data: tmp_var,
+                };
+                let arm = self.compile(new_cond, clauses);
+                (pat, arm)
             })
             .collect();
 
@@ -969,7 +975,7 @@ impl DecisionTreePatternCompiler {
         let param_ty = self.type_db.param_ty_of(&type_id, descriminant);
         clause_with_heads
             .filter_map(|(head, clause)| match head {
-                // descriminantが一致するコンストラクタパターンはそのままあつめる
+                // 判別子が一致するコンストラクタパターンはそのままあつめる
                 case::Pattern::Constructor {
                     descriminant: d,
                     pattern,
