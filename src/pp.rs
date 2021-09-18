@@ -52,8 +52,8 @@ mod case {
                     }
                     print!(")");
                 }
-                Inject { descriminant, data } => {
-                    print!("inj <{}>(", descriminant);
+                Inject { discriminant, data } => {
+                    print!("inj <{}>(", discriminant);
                     for d in data.as_ref().map(|d| &**d) {
                         self.pp(d);
                         print!(", ");
@@ -93,10 +93,10 @@ mod case {
                     print!(")");
                 }
                 Value::Constructor {
-                    descriminant,
+                    discriminant,
                     value,
                 } => {
-                    print!("c <{}>(", descriminant);
+                    print!("c <{}>(", discriminant);
                     for d in value.as_ref().map(|d| &**d) {
                         self.pp(d);
                         print!(", ");
@@ -120,10 +120,10 @@ mod case {
                     print!(")");
                 }
                 Constructor {
-                    descriminant,
+                    discriminant,
                     pattern,
                 } => {
-                    print!("<{}>(", descriminant);
+                    print!("<{}>(", discriminant);
                     for p in pattern.as_ref().map(|p| &**p) {
                         self.pp(p);
                         print!(", ");
@@ -160,8 +160,8 @@ mod simple_case {
                     print!(" in\n{: >1$}", "", self.indent);
                     self.pp(&**body)
                 }
-                Inject { descriminant, data } => {
-                    print!("inj <{}>(", descriminant);
+                Inject { discriminant, data } => {
+                    print!("inj <{}>(", discriminant);
                     for d in data.as_ref().map(|d| &**d) {
                         self.pp(d);
                         print!(", ");
@@ -214,8 +214,8 @@ mod simple_case {
                     }
                     print!(")");
                 }
-                Constructor { descriminant, data } => {
-                    print!("<{}>(", descriminant);
+                Constructor { discriminant, data } => {
+                    print!("<{}>(", discriminant);
                     for s in data {
                         self.pp(s);
                         print!(", ");

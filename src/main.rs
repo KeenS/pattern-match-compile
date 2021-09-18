@@ -48,9 +48,9 @@ mod case {
     pub enum Expr {
         /// (expr1, expr2, ...)
         Tuple(Vec<Expr>),
-        /// inj<descriminant>(data)
+        /// inj<discriminant>(data)
         Inject {
-            descriminant: u8,
+            discriminant: u8,
             data: Option<Box<Expr>>,
         },
         /// case cond of pattern1 => expr1 | pattern2 => expr2 ...
@@ -68,9 +68,9 @@ mod case {
     pub enum Pattern {
         /// (pat1, pat2, ...)
         Tuple(Vec<Pattern>),
-        /// c<descriminant>(pattern)
+        /// c<discriminant>(pattern)
         Constructor {
-            descriminant: u8,
+            discriminant: u8,
             pattern: Option<Box<Pattern>>,
         },
         /// x
@@ -82,9 +82,9 @@ mod case {
     pub enum Value {
         /// (value1, value2, ...)
         Tuple(Vec<Value>),
-        /// c<descriminant>(value)
+        /// c<discriminant>(value)
         Constructor {
-            descriminant: u8,
+            discriminant: u8,
             value: Option<Box<Value>>,
         },
     }
@@ -133,9 +133,9 @@ mod case {
         pub fn constructor(self) -> (u8, Option<Pattern>) {
             match self {
                 Pattern::Constructor {
-                    descriminant,
+                    discriminant,
                     pattern,
-                } => (descriminant, pattern.map(|p| *p)),
+                } => (discriminant, pattern.map(|p| *p)),
                 _ => panic!("pattern is not a constructor"),
             }
         }
@@ -157,7 +157,7 @@ mod case {
 
     #[derive(Debug, Clone)]
     pub struct Constructor {
-        pub descriminant: u8,
+        pub discriminant: u8,
         pub param: Option<TypeId>,
     }
 
@@ -214,13 +214,13 @@ mod case {
             self.0.get(type_id)
         }
 
-        pub fn param_ty_of(&self, type_id: &TypeId, descriminant: u8) -> Option<TypeId> {
+        pub fn param_ty_of(&self, type_id: &TypeId, discriminant: u8) -> Option<TypeId> {
             self.find(type_id)
                 .cloned()
                 .unwrap()
                 .adt()
                 .into_iter()
-                .find(|c| c.descriminant == descriminant)
+                .find(|c| c.discriminant == discriminant)
                 .map(|c| c.param)
                 .unwrap()
         }
@@ -269,8 +269,8 @@ impl CaseInterp {
             // シンボルはスコープから名前を解決する
             Symbol(s) => Ok(self.resolve(&s)),
             // コンストラクタなら引数があれば評価し、値を作る
-            Inject { descriminant, data } => Ok(case::Value::Constructor {
-                descriminant,
+            Inject { discriminant, data } => Ok(case::Value::Constructor {
+                discriminant,
                 value: match data {
                     None => None,
                     Some(d) => Some(Box::new(self.eval(*d)?)),
@@ -292,11 +292,11 @@ impl CaseInterp {
                 .fold(Ok(()), |is_match, ret| ret.and(is_match)),
             (
                 case::Pattern::Constructor {
-                    descriminant: c1,
+                    discriminant: c1,
                     pattern,
                 },
                 case::Value::Constructor {
-                    descriminant: c2,
+                    discriminant: c2,
                     value,
                 },
             ) => {
@@ -332,9 +332,9 @@ mod simple_case {
             expr: Box<Expr>,
             body: Box<Expr>,
         },
-        /// inj<descriminant>(data)
+        /// inject data with discriminant
         Inject {
-            descriminant: u8,
+            discriminant: u8,
             data: Option<Box<Expr>>,
         },
         /// case cond of pattern1 => expr1 | pattern2 => expr2 ...
@@ -357,9 +357,9 @@ mod simple_case {
     pub enum Pattern {
         /// (pat1, pat2, ...)
         Tuple(Vec<Symbol>),
-        /// c<descriminant>(data)
+        /// constructor of discriminant and its data
         Constructor {
-            descriminant: u8,
+            discriminant: u8,
             data: Option<Symbol>,
         },
         /// x
@@ -451,8 +451,8 @@ where
     pub fn compile(&mut self, case: case::Expr) -> simple_case::Expr {
         match case {
             case::Expr::Tuple(vs) => self.compile_tuple(vs),
-            case::Expr::Inject { descriminant, data } => {
-                self.compile_inject(descriminant, data.map(|d| *d))
+            case::Expr::Inject { discriminant, data } => {
+                self.compile_inject(discriminant, data.map(|d| *d))
             }
             case::Expr::Case { cond, ty, clauses } => self.compile_case(*cond, ty, clauses),
             case::Expr::Symbol(s) => self.compile_symbol(s),
@@ -463,9 +463,9 @@ where
         simple_case::Expr::Tuple(data.into_iter().map(|d| self.compile(d)).collect())
     }
 
-    fn compile_inject(&mut self, descriminant: u8, data: Option<case::Expr>) -> simple_case::Expr {
+    fn compile_inject(&mut self, discriminant: u8, data: Option<case::Expr>) -> simple_case::Expr {
         simple_case::Expr::Inject {
-            descriminant,
+            discriminant,
             data: data.map(|d| Box::new(self.compile(d))),
         }
     }
@@ -631,27 +631,27 @@ impl BackTrackPatternCompiler {
             })
             .collect::<Vec<_>>();
         // 先頭のパターンの判別子の集合をとる。
-        let descriminants = clause_with_heads
+        let discriminants = clause_with_heads
             .iter()
             .map(|c| (c.0).0)
             .collect::<HashSet<_>>();
-        // descriminantごとに特殊化する
-        let mut clauses = descriminants
+        // discriminantごとに特殊化する
+        let mut clauses = discriminants
             .iter()
-            .map(|&descriminant| {
-                // パターン行列をdescriminantで特殊化したものを取得
-                let clauses = self.specialize(descriminant, clause_with_heads.iter());
+            .map(|&discriminant| {
+                // パターン行列をdiscriminantで特殊化したものを取得
+                let clauses = self.specialize(discriminant, clause_with_heads.iter());
                 // Type DBから今パターンマッチしている型の、
-                // 対象にしているdescriminantをもつヴァリアントの、
+                // 対象にしているdiscriminantをもつヴァリアントの、
                 // 引数があればその型を取得する
-                let param_ty = self.type_db.param_ty_of(&ty, descriminant);
+                let param_ty = self.type_db.param_ty_of(&ty, discriminant);
                 // 引数があれば一時変数を生成し、条件変数に追加する
                 let tmp_var = param_ty.as_ref().map(|_| self.symbol_generator.gensym("v"));
                 let mut new_cond = cond.clone();
                 new_cond.extend(tmp_var.iter().cloned().zip(param_ty).rev());
                 // 返り値はコンストラクタパターンと、それにマッチしたあとの腕の組
                 let pat = simple_case::Pattern::Constructor {
-                    descriminant,
+                    discriminant,
                     data: tmp_var,
                 };
                 let arm = self.compile(new_cond, clauses);
@@ -660,7 +660,7 @@ impl BackTrackPatternCompiler {
             .collect();
 
         // ヴァリアントが網羅的かどうかで挙動を変える。
-        if self.is_exhausitive(&ty, descriminants) {
+        if self.is_exhausitive(&ty, discriminants) {
             // 網羅的ならそのまま `case` 式の生成
             simple_case::Expr::Case {
                 cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
@@ -706,7 +706,7 @@ impl BackTrackPatternCompiler {
 
     fn specialize<'a, 'b>(
         &'a mut self,
-        descriminant: u8,
+        discriminant: u8,
         clause_with_heads: impl Iterator<
             Item = &'b (
                 (u8, Option<case::Pattern>),
@@ -716,7 +716,7 @@ impl BackTrackPatternCompiler {
     ) -> Vec<(Stack<case::Pattern>, simple_case::Expr)> {
         // 先頭のパターンが指定された判別子に合致する節をあつめてくる
         clause_with_heads
-            .filter(|(head, _)| head.0 == descriminant)
+            .filter(|(head, _)| head.0 == discriminant)
             .cloned()
             .map(|(head, (mut pat, arm))| {
                 pat.extend(head.1.into_iter());
@@ -728,7 +728,7 @@ impl BackTrackPatternCompiler {
     fn is_exhausitive(
         &self,
         type_id: &TypeId,
-        descriminansts: impl IntoIterator<Item = u8>,
+        discriminansts: impl IntoIterator<Item = u8>,
     ) -> bool {
         // 判別子の集合がパターンマッチしている型のヴァリアント全ての集合と合致するかで検査
         self.type_db
@@ -737,9 +737,9 @@ impl BackTrackPatternCompiler {
             .unwrap()
             .adt()
             .into_iter()
-            .map(|c| c.descriminant)
+            .map(|c| c.discriminant)
             .collect::<HashSet<_>>()
-            == descriminansts.into_iter().collect::<HashSet<_>>()
+            == discriminansts.into_iter().collect::<HashSet<_>>()
     }
 }
 
@@ -907,31 +907,31 @@ impl DecisionTreePatternCompiler {
             })
             .collect::<Vec<_>>();
         // 1. 先頭パターンのコンストラクタの判別子を集めてくる
-        let descriminants = clause_with_heads
+        let discriminants = clause_with_heads
             .iter()
             .filter_map(|(head, _)| match head {
-                case::Pattern::Constructor { descriminant, .. } => Some(*descriminant),
+                case::Pattern::Constructor { discriminant, .. } => Some(*discriminant),
                 _ => None,
             })
             .collect::<HashSet<_>>();
         // 2. 判別子毎に特殊化行列を作る
-        let mut clauses = descriminants
+        let mut clauses = discriminants
             .iter()
-            .map(|&descriminant| {
+            .map(|&discriminant| {
                 let clauses = self.specialized_patterns(
                     sym.clone(),
                     &ty,
-                    descriminant,
+                    discriminant,
                     clause_with_heads.iter(),
                 );
                 // 本来ならコンストラクタごとに、引数の有無で処理が微妙に変わる。
                 // そこを `Option` 型のメソッドで違いを吸収している。
-                let param_ty = self.type_db.param_ty_of(&ty, descriminant);
+                let param_ty = self.type_db.param_ty_of(&ty, discriminant);
                 let tmp_var = param_ty.clone().map(|_| self.symbol_generator.gensym("v"));
                 let mut new_cond = cond.clone();
                 new_cond.extend(tmp_var.iter().cloned().zip(param_ty).rev());
                 let pat = simple_case::Pattern::Constructor {
-                    descriminant,
+                    discriminant,
                     data: tmp_var,
                 };
                 let arm = self.compile(new_cond, clauses);
@@ -940,7 +940,7 @@ impl DecisionTreePatternCompiler {
             .collect();
 
         // 3. コンストラクタが網羅的でなければデフォルト行列を作る
-        if self.is_exhausitive(&ty, descriminants) {
+        if self.is_exhausitive(&ty, discriminants) {
             simple_case::Expr::Case {
                 cond: Box::new(simple_case::Expr::Symbol(sym.clone())),
                 clauses,
@@ -967,19 +967,19 @@ impl DecisionTreePatternCompiler {
         &'a mut self,
         cond: Symbol,
         type_id: &TypeId,
-        descriminant: u8,
+        discriminant: u8,
         clause_with_heads: impl Iterator<
             Item = &'b (case::Pattern, (Stack<case::Pattern>, simple_case::Expr)),
         >,
     ) -> Vec<(Stack<case::Pattern>, simple_case::Expr)> {
-        let param_ty = self.type_db.param_ty_of(&type_id, descriminant);
+        let param_ty = self.type_db.param_ty_of(&type_id, discriminant);
         clause_with_heads
             .filter_map(|(head, clause)| match head {
                 // 判別子が一致するコンストラクタパターンはそのままあつめる
                 case::Pattern::Constructor {
-                    descriminant: d,
+                    discriminant: d,
                     pattern,
-                } if *d == descriminant => Some((pattern.clone().map(|p| *p), clause.clone())),
+                } if *d == discriminant => Some((pattern.clone().map(|p| *p), clause.clone())),
                 // 変数パターンは無条件で集めるが、
                 // 腕やパターンに小細工が必要
                 case::Pattern::Variable(var) => {
@@ -999,7 +999,7 @@ impl DecisionTreePatternCompiler {
                     };
                     Some((extra_pattern, (pat, arm)))
                 }
-                // descriminantが一致しないコンストラクタは無視
+                // discriminantが一致しないコンストラクタは無視
                 _ => None,
             })
             .map(|(extra_pattern, (mut pat, arm))| {
@@ -1036,7 +1036,7 @@ impl DecisionTreePatternCompiler {
     fn is_exhausitive(
         &self,
         type_id: &TypeId,
-        descriminansts: impl IntoIterator<Item = u8>,
+        discriminansts: impl IntoIterator<Item = u8>,
     ) -> bool {
         self.type_db
             .find(&type_id)
@@ -1044,9 +1044,9 @@ impl DecisionTreePatternCompiler {
             .unwrap()
             .adt()
             .into_iter()
-            .map(|c| c.descriminant)
+            .map(|c| c.discriminant)
             .collect::<HashSet<_>>()
-            == descriminansts.into_iter().collect::<HashSet<_>>()
+            == discriminansts.into_iter().collect::<HashSet<_>>()
     }
 }
 
@@ -1083,8 +1083,8 @@ impl SimpleToSwitch {
         match case {
             simple_case::Expr::Tuple(t) => self.compile_tuple(t),
             simple_case::Expr::Let { var, expr, body } => self.compile_let(var, *expr, *body),
-            simple_case::Expr::Inject { descriminant, data } => {
-                self.compile_inject(descriminant, data.map(|d| *d))
+            simple_case::Expr::Inject { discriminant, data } => {
+                self.compile_inject(discriminant, data.map(|d| *d))
             }
             simple_case::Expr::Case { cond, clauses } => self.compile_case(*cond, clauses),
             simple_case::Expr::RaiseMatch => self.compile_raise_match(),
@@ -1142,16 +1142,16 @@ impl SimpleToSwitch {
 
     fn compile_inject(
         &mut self,
-        descriminant: u8,
+        discriminant: u8,
         data: Option<simple_case::Expr>,
     ) -> (Vec<switch::Stmt>, Symbol) {
         use switch::{Op, Stmt};
         let mut ret = Vec::new();
         let size = (data.is_some() as u8) + 1;
 
-        // descriminantの部分
-        let des = self.gensym("des");
-        ret.push(Stmt::Assign(des.clone(), Op::Const(descriminant as i32)));
+        // discriminantの部分
+        let dis = self.gensym("dis");
+        ret.push(Stmt::Assign(dis.clone(), Op::Const(discriminant as i32)));
 
         // dataの部分
         let mut data_sym = None;
@@ -1167,7 +1167,7 @@ impl SimpleToSwitch {
         ret.push(Stmt::Store {
             base: v.clone(),
             offset: 0,
-            data: des.clone(),
+            data: dis.clone(),
         });
         if let Some(sym) = data_sym {
             ret.push(Stmt::Store {
@@ -1250,7 +1250,7 @@ impl SimpleToSwitch {
             let (arm_stmts, arm_symbol) = self.compile_expr(arm);
             // コンストラクタ、変数へのパターンマッチそれぞれをここで捌く
             match pat {
-                simple_case::Pattern::Constructor { descriminant, data } => {
+                simple_case::Pattern::Constructor { discriminant, data } => {
                     let mut block = vec![];
                     if let Some(sym) = data {
                         let load = Op::Load {
@@ -1261,7 +1261,7 @@ impl SimpleToSwitch {
                     }
                     block.extend(arm_stmts);
                     block.push(Stmt::Assign(result_sym.clone(), Op::Symbol(arm_symbol)));
-                    switch_clauses.push((descriminant as i32, Block(block)))
+                    switch_clauses.push((discriminant as i32, Block(block)))
                 }
                 simple_case::Pattern::Variable(s) => {
                     let mut block = vec![Stmt::Assign(s.clone(), Op::Symbol(cond_symbol.clone()))];
@@ -1364,11 +1364,11 @@ fn main() {
         TypeId::new("bool"),
         vec![
             case::Constructor {
-                descriminant: 0,
+                discriminant: 0,
                 param: None,
             },
             case::Constructor {
-                descriminant: 1,
+                discriminant: 1,
                 param: None,
             },
         ],
@@ -1391,15 +1391,15 @@ fn main() {
         TypeId::new("hoge"),
         vec![
             case::Constructor {
-                descriminant: 0,
+                discriminant: 0,
                 param: None,
             },
             case::Constructor {
-                descriminant: 1,
+                discriminant: 1,
                 param: Some(TypeId::new("bool")),
             },
             case::Constructor {
-                descriminant: 2,
+                discriminant: 2,
                 param: Some(TypeId::new("tuple3")),
             },
         ],
@@ -1420,12 +1420,12 @@ fn main() {
         vec![
             // Nil
             case::Constructor {
-                descriminant: 0,
+                discriminant: 0,
                 param: None,
             },
             // Cons () * List
             case::Constructor {
-                descriminant: 1,
+                discriminant: 1,
                 param: Some(TypeId::new("cons")),
             },
         ],
@@ -1438,17 +1438,17 @@ fn main() {
         use Expr::*;
 
         let truev = Expr::Inject {
-            descriminant: 0,
+            discriminant: 0,
             data: None,
         };
         let unitv = Expr::Inject {
-            descriminant: 0,
+            discriminant: 0,
             data: None,
         };
 
         Case {
             cond: Box::new(Inject {
-                descriminant: 2,
+                discriminant: 2,
                 data: Some(Box::new(Tuple(vec![
                     truev.clone(),
                     truev.clone(),
@@ -1459,24 +1459,24 @@ fn main() {
             clauses: vec![
                 (
                     Pattern::Constructor {
-                        descriminant: 0,
+                        discriminant: 0,
                         pattern: None,
                     },
                     unitv.clone(),
                 ),
                 (
                     Pattern::Constructor {
-                        descriminant: 1,
+                        discriminant: 1,
                         pattern: Some(Box::new(Pattern::Variable(sg.gensym("x")))),
                     },
                     unitv.clone(),
                 ),
                 (
                     Pattern::Constructor {
-                        descriminant: 2,
+                        discriminant: 2,
                         pattern: Some(Box::new(Pattern::Tuple(vec![
                             Pattern::Constructor {
-                                descriminant: 0,
+                                discriminant: 0,
                                 pattern: None,
                             },
                             Pattern::Variable(sg.gensym("y")),
@@ -1487,11 +1487,11 @@ fn main() {
                 ),
                 (
                     Pattern::Constructor {
-                        descriminant: 2,
+                        discriminant: 2,
                         pattern: Some(Box::new(Pattern::Tuple(vec![
                             Pattern::Variable(sg.gensym("x")),
                             Pattern::Constructor {
-                                descriminant: 0,
+                                discriminant: 0,
                                 pattern: None,
                             },
                             Pattern::Variable(sg.gensym("z")),
@@ -1501,12 +1501,12 @@ fn main() {
                 ),
                 (
                     Pattern::Constructor {
-                        descriminant: 2,
+                        discriminant: 2,
                         pattern: Some(Box::new(Pattern::Tuple(vec![
                             Pattern::Variable(sg.gensym("x")),
                             Pattern::Variable(sg.gensym("y")),
                             Pattern::Constructor {
-                                descriminant: 0,
+                                discriminant: 0,
                                 pattern: None,
                             },
                         ]))),
@@ -1515,7 +1515,7 @@ fn main() {
                 ),
                 (
                     Pattern::Constructor {
-                        descriminant: 2,
+                        discriminant: 2,
                         pattern: Some(Box::new(Pattern::Tuple(vec![
                             Pattern::Variable(sg.gensym("x")),
                             Pattern::Variable(sg.gensym("y")),
@@ -1534,22 +1534,22 @@ fn main() {
 
         // `false` （値）のつもり
         let falsev = Expr::Inject {
-            descriminant: 1,
+            discriminant: 1,
             data: None,
         };
         // `true` （値）のつもり
         let truev = Expr::Inject {
-            descriminant: 0,
+            discriminant: 0,
             data: None,
         };
         // `false` （パターン）のつもり
         let falsep = Pattern::Constructor {
-            descriminant: 1,
+            discriminant: 1,
             pattern: None,
         };
         // `true` （パターン）のつもり
         let truep = Pattern::Constructor {
-            descriminant: 0,
+            discriminant: 0,
             pattern: None,
         };
 
@@ -1581,14 +1581,14 @@ fn main() {
 
         // `Nil` （値）のつもり
         let nilv = Expr::Inject {
-            descriminant: 0,
+            discriminant: 0,
             data: None,
         };
 
         // `Cons` （コンストラクタ）のつもり
         fn consv(arg: Expr) -> Expr {
             Expr::Inject {
-                descriminant: 1,
+                discriminant: 1,
                 data: Some(Box::new(arg)),
             }
         }
@@ -1603,14 +1603,14 @@ fn main() {
 
         // `Nil` （パターン）のつもり
         let nilp = Pattern::Constructor {
-            descriminant: 0,
+            discriminant: 0,
             pattern: None,
         };
 
         // `Cons` （パターン）のつもり
         fn consp(car: Pattern, cdr: Pattern) -> Pattern {
             Pattern::Constructor {
-                descriminant: 1,
+                discriminant: 1,
                 pattern: Some(Box::new(tuple2p(car, cdr))),
             }
         }
@@ -1642,10 +1642,11 @@ fn main() {
         }
     };
 
-    let expr = m3;
+    let expr = m2;
 
     let mut p = PrettyPrinter::new();
     p.pp(&expr);
+    println!("{:#?}", expr);
 
     println!("");
     println!("evaled to");
@@ -1655,7 +1656,8 @@ fn main() {
     match v {
         Ok(v) => {
             p.pp(&v);
-            println!()
+            println!();
+            println!("{:?}", v);
         }
         Err(Match) => println!("match failed"),
     }
